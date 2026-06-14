@@ -11,6 +11,7 @@ Official migration-safe entrypoints:
 - `check_imports.py`: verify key imports after installation.
 - `verify_migration_package.py`: verify GitHub package completeness and absence of large artifacts.
 - `collect_experiment_outputs.py`: collect compact output manifests.
+- `build_paper_evidence_pack.py`: collect metrics, manifests, safety audits, repair summaries, and figure assets into `outputs/paper_evidence/` for paper writing.
 - `evaluate.py` / `evaluate_geometry_metrics.py`: evaluation launchers.
 - `render_periodic_panels.py`: periodic panel helper.
 

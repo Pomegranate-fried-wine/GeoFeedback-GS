@@ -498,6 +498,38 @@ python scripts/collect_experiment_outputs.py \
 - `feedback_controller/iter_XXXXXX/gaussian_control/gaussian_control_manifest.json`
 - `feedback_controller/iter_XXXXXX/*safety_audit*.json`
 
+## 13.1 论文证据包
+
+训练与 final evaluation 完成后，一键整理论文需要的表格、manifest、audit 和可用图像：
+
+```bash
+python scripts/build_paper_evidence_pack.py \
+  --output-root outputs/a100_main_experiments \
+  --paper-dir outputs/paper_evidence
+```
+
+重点输出：
+
+```text
+outputs/paper_evidence/tables/main_final_metrics.csv
+outputs/paper_evidence/tables/region_lidar_geometry_metrics.csv
+outputs/paper_evidence/tables/feedback_trigger_summary.csv
+outputs/paper_evidence/tables/safety_audit_summary.csv
+outputs/paper_evidence/tables/repair_candidate_summary.csv
+outputs/paper_evidence/tables/figure_index.csv
+outputs/paper_evidence/tables/missing_evidence_report.csv
+outputs/paper_evidence/figures/
+outputs/paper_evidence/manifests/
+```
+
+论文写作前先看：
+
+```bash
+cat outputs/paper_evidence/tables/missing_evidence_report.csv
+```
+
+若仍存在 `paper_table_gap`、`method_evidence_gap` 或 `figure_gap`，先补对应 evaluation / panel / final metrics，再写强结论。
+
 ## 14. 常见问题
 
 ### CUDA extension import failed

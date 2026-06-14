@@ -31,3 +31,48 @@ outputs/<exp_name>/
   metrics/
   final_eval/
 ```
+
+## 论文证据包
+
+正式实验完成后运行：
+
+```bash
+python scripts/build_paper_evidence_pack.py \
+  --output-root outputs/a100_main_experiments \
+  --paper-dir outputs/paper_evidence
+```
+
+生成目录：
+
+```text
+outputs/paper_evidence/
+  README.md
+  summaries/
+    paper_evidence_summary.json
+    missing_evidence_report.json
+  tables/
+    experiment_inventory.csv
+    main_final_metrics.csv
+    region_lidar_geometry_metrics.csv
+    feedback_trigger_summary.csv
+    safety_audit_summary.csv
+    repair_candidate_summary.csv
+    figure_index.csv
+    missing_evidence_report.csv
+  figures/
+    panels/
+    risk_maps/
+    contribution/
+    group_responsibility/
+    opacity_decay/
+  manifests/
+```
+
+`missing_evidence_report.csv` 必须作为论文写作前检查项。如果该文件中仍有 `paper_table_gap`、`method_evidence_gap` 或 `figure_gap`，对应结论不能强写。
+
+DA3-unsupervised 论文结论必须同时检查：
+
+- `feedback_trigger_summary.csv` 中 `uses_lidar_supervision=false`；
+- `feedback_trigger_summary.csv` 中 `uses_lidar_selected_pixels=false`；
+- `safety_audit_summary.csv` 中没有 real prune / split / shrink；
+- `region_lidar_geometry_metrics.csv` 中每个 region 都带 `valid_lidar_count` 和 `confidence`。
