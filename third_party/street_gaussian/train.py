@@ -234,6 +234,47 @@ def _sky_scale_for_camera(optim_args, viewpoint_cam):
     return float(scales[cam_id])
 
 
+def _training_include_list(gaussians):
+    return list(set(gaussians.model_name_id.keys()) - set(["sky"]))
+
+
+def _restore_training_render_state(gaussians, viewpoint_cam):
+    gaussians.set_visibility(include_list=_training_include_list(gaussians))
+    gaussians.parse_camera(viewpoint_cam)
+
+
+def _assert_training_render_shapes(iteration, viewpoint_cam, gaussians, radii, visibility_filter, viewspace_point_tensor=None):
+    expected = 0
+    range_summary = {}
+    for model_name, (start, end) in gaussians.graph_gaussian_range.items():
+        model = getattr(gaussians, model_name)
+        model_count = int(model.max_radii2D.shape[0])
+        expected = max(expected, int(end))
+        range_summary[model_name] = {
+            "range": [int(start), int(end)],
+            "max_radii2D_shape": model_count,
+        }
+        if int(end - start) != model_count:
+            raise ValueError(
+                "[Densification] graph range/model shape mismatch before set_max_radii2D: "
+                f"iter={iteration}, cam={viewpoint_cam.meta.get('cam', None)}, view={getattr(viewpoint_cam, 'image_name', '')}, "
+                f"model={model_name}, range=({start},{end}), max_radii2D_shape={model_count}. "
+                "A non-training render may have changed StreetGaussianModel graph state."
+            )
+    radii_len = int(radii.shape[0])
+    visibility_len = int(visibility_filter.shape[0])
+    viewspace_len = int(viewspace_point_tensor.shape[0]) if viewspace_point_tensor is not None else radii_len
+    if radii_len != expected or visibility_len != expected or viewspace_len != expected:
+        raise ValueError(
+            "[Densification] training render tensors do not match current StreetGaussianModel graph state: "
+            f"iter={iteration}, cam={viewpoint_cam.meta.get('cam', None)}, view={getattr(viewpoint_cam, 'image_name', '')}, "
+            f"radii_shape={tuple(radii.shape)}, visibility_filter_shape={tuple(visibility_filter.shape)}, "
+            f"viewspace_shape={tuple(viewspace_point_tensor.shape) if viewspace_point_tensor is not None else None}, "
+            f"expected_graph_gaussians={expected}, graph_ranges={range_summary}. "
+            "Ensure periodic_eval/log/validation renders restore the training camera state before densification."
+        )
+
+
 def _tensor_rgb_u8(tensor):
     x = torch.clamp(tensor.detach(), 0.0, 1.0).cpu().numpy()
     if x.ndim == 3 and x.shape[0] in (1, 3):
@@ -881,6 +922,7 @@ def training():
             gaussians_renderer,
             training_args,
         )
+        _restore_training_render_state(gaussians, viewpoint_cam)
         with torch.no_grad():
             _write_periodic_eval(
                 iteration,
@@ -892,6 +934,7 @@ def training():
                 training_args,
                 periodic_eval_previous_stats,
             )
+        _restore_training_render_state(gaussians, viewpoint_cam)
         
         with torch.no_grad():
             
@@ -918,7 +961,9 @@ def training():
 
             # Densification
             if structure_updates_enabled and iteration < optim_args.densify_until_iter:
-                gaussians.set_visibility(include_list=list(set(gaussians.model_name_id.keys()) - set(['sky'])))
+                _restore_training_render_state(gaussians, viewpoint_cam)
+                _assert_training_render_shapes(iteration, viewpoint_cam, gaussians, radii, visibility_filter, viewspace_point_tensor)
+                gaussians.set_visibility(include_list=_training_include_list(gaussians))
                 gaussians.set_max_radii2D(radii, visibility_filter)
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
                 
