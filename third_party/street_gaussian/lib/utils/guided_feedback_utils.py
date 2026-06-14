@@ -41,9 +41,12 @@ class GuidedFeedbackController:
             "bad_pixel_count": 0,
             "good_pixel_count": 0,
             "loaded": False,
+            "waiting_for_signal": False,
         }
-        if self.enabled and self.feedback_mode != "global":
+        if self.enabled and self.feedback_mode != "global" and self.signal_path:
             self._load()
+        elif self.enabled and self.feedback_mode != "global":
+            self.summary["waiting_for_signal"] = True
 
     def validate_supervision(self, optim_args):
         if not self.enabled:
@@ -91,10 +94,15 @@ class GuidedFeedbackController:
             return json.load(f)
 
     def _load(self):
-        if not self.signal_path or not os.path.exists(self.signal_path):
+        if not self.signal_path:
+            self.summary["loaded"] = False
+            self.summary["waiting_for_signal"] = True
+            return
+        if not os.path.exists(self.signal_path):
             raise FileNotFoundError(f"guided feedback signal not found: {self.signal_path}")
         self.regions_by_view = defaultdict(list)
         self.pixel_feedback_by_view = defaultdict(list)
+        self.summary["waiting_for_signal"] = False
         signal = self._load_json(self.signal_path)
         self.summary["bad_contributor_count"] = len(signal.get("bad_contributors", []))
         self.summary["good_contributor_count"] = len(signal.get("good_contributors", []))
