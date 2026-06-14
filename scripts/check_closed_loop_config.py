@@ -40,6 +40,14 @@ def get(cfg, dotted, default=None):
     return cur
 
 
+def _as_int_list(value):
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [int(v) for v in value]
+    return [int(value)]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
@@ -57,6 +65,8 @@ def main():
     allow_prune = bool(get(cfg, "train.gaussian_control.allow_real_prune", False))
     allow_split = bool(get(cfg, "train.gaussian_control.allow_real_split", False))
     allow_shrink = bool(get(cfg, "train.gaussian_control.allow_real_shrink", False))
+    cameras = _as_int_list(get(cfg, "data.cameras", []))
+    lambda_sky_scale = get(cfg, "optim.lambda_sky_scale", [])
 
     if supervision == "da3_unsupervised":
         checks.append(("da3_no_lidar_loss", not uses_lidar and lambda_lidar == 0.0))
@@ -68,6 +78,9 @@ def main():
         checks.append(("opacity_decay_requires_parameter_permission", allow_param))
     else:
         checks.append(("no_parameter_modification_unless_decay", not allow_param))
+    if isinstance(lambda_sky_scale, list) and lambda_sky_scale:
+        max_cam = max(cameras) if cameras else -1
+        checks.append(("lambda_sky_scale_covers_cameras", max_cam < len(lambda_sky_scale)))
 
     failed = [name for name, ok in checks if not ok]
     payload = {
@@ -81,8 +94,17 @@ def main():
             "control_mode": control_mode,
             "uses_lidar_depth": uses_lidar,
             "lambda_depth_lidar": lambda_lidar,
+            "cameras": cameras,
+            "lambda_sky_scale_length": len(lambda_sky_scale) if isinstance(lambda_sky_scale, list) else None,
         },
     }
+    if "lambda_sky_scale_covers_cameras" in failed:
+        payload["error"] = (
+            "optim.lambda_sky_scale is too short for data.cameras: "
+            f"max(data.cameras)={max(cameras) if cameras else 'none'}, "
+            f"len(lambda_sky_scale)={len(lambda_sky_scale)}. "
+            "Use a scale list that covers all camera ids, e.g. [1, 1, 0, 0, 0] for cameras [0,1,2,3,4]."
+        )
     print(json.dumps(payload, indent=2, ensure_ascii=False))
     if args.json_out:
         out = Path(args.json_out)

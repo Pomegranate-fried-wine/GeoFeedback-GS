@@ -218,6 +218,21 @@ def _edge_mean(depth_tensor):
     return float((dx + dy).item() * 0.5)
 
 
+def _sky_scale_for_camera(optim_args, viewpoint_cam):
+    scales = list(getattr(optim_args, "lambda_sky_scale", []) or [])
+    if not scales:
+        return 1.0
+    cam_id = int(viewpoint_cam.meta.get("cam", 0))
+    if cam_id < 0 or cam_id >= len(scales):
+        raise ValueError(
+            "optim.lambda_sky_scale does not cover the current camera id: "
+            f"cam={cam_id}, len(lambda_sky_scale)={len(scales)}. "
+            "For five Waymo cameras [0,1,2,3,4], set "
+            "optim.lambda_sky_scale: [1, 1, 0, 0, 0]."
+        )
+    return float(scales[cam_id])
+
+
 def _selected_bbox_from_trigger(trigger_dir, width, height):
     risk_dir = os.path.join(trigger_dir, "risk_stage")
     selected_files = [p for p in os.listdir(risk_dir)] if os.path.isdir(risk_dir) else []
@@ -521,8 +536,7 @@ def training():
         if optim_args.lambda_sky > 0 and gaussians.include_sky and sky_mask is not None:
             acc = torch.clamp(acc, min=1e-6, max=1.-1e-6)
             sky_loss = torch.where(sky_mask, -torch.log(1 - acc), -torch.log(acc)).mean()
-            if len(optim_args.lambda_sky_scale) > 0:
-                sky_loss *= optim_args.lambda_sky_scale[viewpoint_cam.meta['cam']]
+            sky_loss *= _sky_scale_for_camera(optim_args, viewpoint_cam)
             scalar_dict['sky_loss'] = sky_loss.item()
             loss += optim_args.lambda_sky * sky_loss
         
