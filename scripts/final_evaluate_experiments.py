@@ -49,6 +49,18 @@ def _materialize_config(repo_root, config_path, out_dir, loaded_iter):
     payload["workspace"] = str(repo_root)
     payload["mode"] = "evaluate"
     payload["loaded_iter"] = int(loaded_iter)
+    existing_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if existing_visible:
+        payload["gpus"] = [-1]
+        print(
+            "[FinalEval][CUDA] Respect existing "
+            f"CUDA_VISIBLE_DEVICES={existing_visible}; disable cfg.gpus override"
+        )
+    else:
+        print(
+            "[FinalEval][CUDA] CUDA_VISIBLE_DEVICES is unset; "
+            f"StreetGS may use cfg.gpus={payload.get('gpus', '<missing>')}"
+        )
     payload.setdefault("eval", {})
     payload["eval"]["skip_train"] = False
     payload["eval"]["skip_test"] = False
