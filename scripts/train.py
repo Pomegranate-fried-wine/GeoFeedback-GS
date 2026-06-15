@@ -47,7 +47,14 @@ def _materialize_config(repo_root, config_path):
     out_path = out_dir / Path(config_path).name
     with out_path.open("w", encoding="utf-8") as f:
         yaml.safe_dump(payload, f, sort_keys=False, allow_unicode=True)
-    return out_path
+    return out_path, payload
+
+
+def _config_visible_devices(payload):
+    gpus = payload.get("gpus")
+    if not isinstance(gpus, list) or -1 in gpus:
+        return None
+    return ",".join(str(gpu) for gpu in gpus)
 
 
 def main():
@@ -63,14 +70,25 @@ def main():
     env["PYTHONPATH"] = os.pathsep.join(pythonpath)
 
     args = []
+    config_payloads = []
     for arg in sys.argv[1:]:
         if arg.endswith(".yaml") or arg.endswith(".yml"):
             p = Path(arg)
             if not p.is_absolute():
                 p = (repo_root / p).resolve()
-            args.append(str(_materialize_config(repo_root, p)))
+            materialized_path, payload = _materialize_config(repo_root, p)
+            config_payloads.append(payload)
+            args.append(str(materialized_path))
         else:
             args.append(arg)
+    if not env.get("CUDA_VISIBLE_DEVICES") and config_payloads:
+        visible_devices = _config_visible_devices(config_payloads[0])
+        if visible_devices:
+            env["CUDA_VISIBLE_DEVICES"] = visible_devices
+    print(
+        "[GeoGuardGS][CUDA] Launching StreetGS with "
+        f"CUDA_VISIBLE_DEVICES={env.get('CUDA_VISIBLE_DEVICES', '<unset>')}"
+    )
     cmd = [sys.executable, str(train_entry)] + args
     raise SystemExit(subprocess.call(cmd, cwd=str(streetgs_root), env=env))
 

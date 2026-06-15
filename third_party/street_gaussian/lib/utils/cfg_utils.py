@@ -6,9 +6,21 @@ def parse_cfg(cfg, args):
     if len(cfg.task) == 0:
         raise ValueError('task must be specified')
 
-    # assign the gpus
+    # Assign GPUs only when the launcher has not already pinned the process.
+    # A100 experiment launchers set CUDA_VISIBLE_DEVICES to a physical GPU id
+    # before Python imports torch. Overriding it here can silently move all
+    # launched jobs back to cfg.gpus, usually GPU 0.
     if -1 not in cfg.gpus:
-        os.environ['CUDA_VISIBLE_DEVICES'] = ', '.join([str(gpu) for gpu in cfg.gpus])
+        requested_visible = ','.join([str(gpu) for gpu in cfg.gpus])
+        existing_visible = os.environ.get('CUDA_VISIBLE_DEVICES')
+        if existing_visible:
+            print(
+                f"[CUDA] Respect existing CUDA_VISIBLE_DEVICES={existing_visible}; "
+                f"cfg.gpus={list(cfg.gpus)}"
+            )
+        else:
+            os.environ['CUDA_VISIBLE_DEVICES'] = requested_visible
+            print(f"[CUDA] Set CUDA_VISIBLE_DEVICES={requested_visible} from cfg.gpus")
 
     if cfg.debug:
         os.environ["PYTHONBREAKPOINT"] = "pdbr.set_trace"

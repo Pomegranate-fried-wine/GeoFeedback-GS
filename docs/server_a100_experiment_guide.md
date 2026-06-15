@@ -660,3 +660,39 @@ train.gaussian_control.allow_real_prune: false
 train.gaussian_control.allow_real_split: false
 train.gaussian_control.allow_real_shrink: false
 ```
+
+## GPU / CUDA runtime check
+
+Before launching long A100 jobs, run:
+
+```bash
+python scripts/check_cuda_runtime.py
+```
+
+Expected output should include:
+
+```text
+cuda_available=True
+device_name=NVIDIA A100...
+tensor_device=cuda:0
+memory_allocated_mb=...
+```
+
+For multi-GPU launches, `scripts/launch_a100_experiments.py` pins each subprocess
+with `CUDA_VISIBLE_DEVICES=<physical_gpu_id>`. Inside the training process,
+PyTorch will normally report `current_device=0`; this is the logical device
+within the pinned visibility set, not necessarily physical GPU 0. Check the
+launcher print line and `experiment_manifest.json` field
+`cuda_visible_devices` to map each run back to the physical A100 id.
+
+At training startup the log must now contain lines like:
+
+```text
+[GeoGuardGS][CUDA] Launching StreetGS with CUDA_VISIBLE_DEVICES=...
+[CUDA][startup] torch.cuda.is_available=True device_count=...
+[CUDA][startup] current_device=0 name=NVIDIA A100...
+[CUDA][after_model_setup] gaussians.get_xyz device=cuda:0 shape=(...)
+```
+
+If `torch.cuda.is_available=False`, training exits immediately with a clear
+CUDA setup error instead of silently continuing.

@@ -54,12 +54,13 @@ def main():
             "experiment": exp_name,
             "config": str(cfg_path),
             "gpu": gpu,
+            "cuda_visible_devices": env["CUDA_VISIBLE_DEVICES"],
             "output_dir": str(exp_dir),
             "command": cmd,
             "dry_run": bool(args.dry_run),
         }
         runs.append(record)
-        print(f"[GeoGuardGS] GPU {gpu}: {' '.join(cmd)}")
+        print(f"[GeoGuardGS] GPU {gpu} CUDA_VISIBLE_DEVICES={gpu}: {' '.join(cmd)}")
         if not args.dry_run:
             log_path = exp_dir / "launch.log"
             log = open(log_path, "a", encoding="utf-8")

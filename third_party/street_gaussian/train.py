@@ -34,6 +34,31 @@ except ImportError:
     TENSORBOARD_FOUND = False
 
 
+def _print_cuda_diagnostics(stage):
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES", "<unset>")
+    print(f"[CUDA][{stage}] CUDA_VISIBLE_DEVICES={visible}")
+    print(
+        f"[CUDA][{stage}] torch.cuda.is_available={torch.cuda.is_available()} "
+        f"device_count={torch.cuda.device_count()}"
+    )
+    if torch.cuda.is_available():
+        current_device = torch.cuda.current_device()
+        print(
+            f"[CUDA][{stage}] current_device={current_device} "
+            f"name={torch.cuda.get_device_name(current_device)}"
+        )
+
+
+def _require_cuda(stage):
+    _print_cuda_diagnostics(stage)
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "CUDA is required for Street Gaussian training, but torch reports "
+            "cuda.is_available()=False. Check the A100 server driver, CUDA "
+            "PyTorch build, container GPU passthrough, and CUDA_VISIBLE_DEVICES."
+        )
+
+
 def compute_lidar_guided_loss(
     lidar_depth,
     mask,
@@ -667,6 +692,12 @@ def training():
     scene = Scene(gaussians=gaussians, dataset=dataset)
 
     gaussians.training_setup()
+    _print_cuda_diagnostics("after_model_setup")
+    try:
+        xyz = gaussians.get_xyz
+        print(f"[CUDA][after_model_setup] gaussians.get_xyz device={xyz.device} shape={tuple(xyz.shape)}")
+    except Exception as exc:
+        print(f"[CUDA][after_model_setup][WARN] failed to inspect gaussian tensor device: {exc}")
     if cfg.resume:
         try:
             if cfg.loaded_iter == -1:
@@ -1087,6 +1118,7 @@ def training_report(tb_writer, iteration, scalar_stats, tensor_stats, testing_it
 
 if __name__ == "__main__":
     print("Optimizing " + cfg.model_path)
+    _require_cuda("startup")
 
     # Initialize system state (RNG)
     safe_state(cfg.train.quiet)
