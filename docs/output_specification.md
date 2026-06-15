@@ -111,3 +111,44 @@ DA3-unsupervised 论文结论必须同时检查：
 - `feedback_trigger_summary.csv` 中 `uses_lidar_selected_pixels=false`；
 - `safety_audit_summary.csv` 中没有 real prune / split / shrink；
 - `region_lidar_geometry_metrics.csv` 中每个 region 都带 `valid_lidar_count` 和 `confidence`。
+
+## Paper Result Visuals
+
+After building the evidence pack, render paper-facing result tables and plots:
+
+```bash
+python scripts/build_paper_result_visuals.py \
+  --paper-dir outputs/paper_evidence \
+  --out-dir outputs/paper_results
+```
+
+This creates:
+
+```text
+outputs/paper_results/
+  README.md
+  paper_result_manifest.json
+  tables/
+    table_main_results.csv
+    table_main_results.md
+    table_no_lidar_audit.csv
+    table_no_lidar_audit.md
+    table_feedback_summary.csv
+    table_feedback_summary.md
+  latex/
+    table_main_results.tex
+    table_no_lidar_audit.tex
+    table_feedback_summary.tex
+  plots/
+    psnr_mean_curve.png
+    psnr_median_curve.png
+    l1_mean_curve.png
+    feedback_trigger_timeline.png
+    initialization_audit.png
+  figures/
+    selected_panels/
+```
+
+The result renderer does not fabricate missing metrics. If source CSV files are
+missing, the corresponding table or plot is empty or marked skipped in
+`paper_result_manifest.json`.
