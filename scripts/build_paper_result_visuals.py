@@ -9,6 +9,20 @@ import shutil
 from pathlib import Path
 
 
+FORMAL_EXPERIMENTS = [
+    "streetgs_original_baseline",
+    "da3_only_full_scene_lidar_init",
+    "da3_periodic_group_softpatch_full_scene_lidar_init",
+    "pv_da3_feedback_obj",
+]
+
+FINAL_TO_TRAIN_EXPERIMENT = {
+    "a100_baseline_streetgs": "streetgs_original_baseline",
+    "a100_da3_only": "da3_only_full_scene_lidar_init",
+    "a100_da3_periodic_group_softpatch": "da3_periodic_group_softpatch_full_scene_lidar_init",
+    "a100_pv_da3_feedback_obj": "pv_da3_feedback_obj",
+}
+
 EXPERIMENT_LABELS = {
     "a100_baseline_streetgs": "A StreetGS",
     "streetgs_original_baseline": "A StreetGS",
@@ -18,8 +32,8 @@ EXPERIMENT_LABELS = {
     "da3_only_full_scene_lidar_init": "B DA3-only",
     "da3_only": "B DA3-only",
     "da3_only_colmap_5000": "B DA3-only",
-    "a100_da3_periodic_group_softpatch": "D DA3+Feedback",
-    "da3_periodic_group_softpatch_full_scene_lidar_init": "D DA3+Feedback",
+    "a100_da3_periodic_group_softpatch": "C DA3+Feedback",
+    "da3_periodic_group_softpatch_full_scene_lidar_init": "C DA3+Feedback",
     "da3_periodic_group_softpatch": "C DA3+Feedback",
     "da3_periodic_group_softpatch_colmap_5000": "C DA3+Feedback",
     "da3_periodic_group_softpatch_opacity_reg": "D +Opacity Reg",
@@ -27,6 +41,8 @@ EXPERIMENT_LABELS = {
     "lidar_init_streetgs_reference": "D LiDAR-init Ref",
     "lidar_supervised_reference": "E LiDAR-supervised Ref",
     "hybrid_reference": "Hybrid Ref",
+    "a100_pv_da3_feedback_obj": "PV-C Pure-Vision",
+    "pv_da3_feedback_obj": "PV-C Pure-Vision",
 }
 
 
@@ -69,6 +85,10 @@ def truthy(value):
 
 def label_for(exp):
     return EXPERIMENT_LABELS.get(exp, exp)
+
+
+def train_exp_for(exp):
+    return FINAL_TO_TRAIN_EXPERIMENT.get(exp, exp)
 
 
 def markdown_table(rows, fields):
@@ -122,15 +142,34 @@ def choose_last_eval_rows(eval_rows):
 def build_main_result_table(tables_dir):
     final_rows = read_csv(tables_dir / "final_full_evaluation_summary.csv")
     init_rows = {row.get("experiment", ""): row for row in read_csv(tables_dir / "initialization_summary.csv")}
-    final_main = [
+    feedback_rows = read_csv(tables_dir / "feedback_trigger_summary.csv")
+    feedback_count = {}
+    feedback_valid = {}
+    for feedback in feedback_rows:
+        feedback_exp = feedback.get("experiment", "")
+        if feedback.get("status") == "not_applicable":
+            continue
+        feedback_count[feedback_exp] = feedback_count.get(feedback_exp, 0) + 1
+        if feedback.get("status") == "valid":
+            feedback_valid[feedback_exp] = feedback_valid.get(feedback_exp, 0) + 1
+    summary_main_rows = [
         row for row in final_rows
-        if row.get("table") == "summary_main" or (row.get("scope") == "full_image" and row.get("split") == "test")
+        if row.get("table") == "summary_main"
+    ]
+    final_main = summary_main_rows or [
+        row for row in final_rows
+        if row.get("scope") == "full_image" and row.get("split") == "test"
     ]
     if final_main:
         rows = []
+        seen = set()
         for row in final_main:
             exp = row.get("experiment", "")
-            init = init_rows.get(exp, {})
+            if exp in seen:
+                continue
+            seen.add(exp)
+            train_exp = train_exp_for(exp)
+            init = init_rows.get(train_exp, init_rows.get(exp, {}))
             rows.append({
                 "experiment": exp,
                 "label": label_for(exp),
@@ -144,8 +183,8 @@ def build_main_result_table(tables_dir):
                 "outlier_count": "",
                 "uses_lidar_init": init.get("uses_lidar_initialization", ""),
                 "init_source": init.get("initialization_source", ""),
-                "feedback_valid": "",
-                "feedback_total": "",
+                "feedback_valid": feedback_valid.get(train_exp, ""),
+                "feedback_total": feedback_count.get(train_exp, ""),
             })
         return sorted(rows, key=lambda r: r["label"])
 
@@ -420,10 +459,123 @@ def copy_selected_figures(paper_dir, out_dir, max_per_category):
     return copied
 
 
+def _local_periodic_asset(raw_root, exp, iteration, server_path):
+    if not server_path:
+        return None
+    name = Path(server_path).name
+    for subdir in ["assets", "panels"]:
+        candidate = raw_root / exp / "periodic_eval" / iteration / subdir / name
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _load_periodic_manifest(raw_root, exp, iteration):
+    path = raw_root / exp / "periodic_eval" / iteration / "panel_manifest.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    views = {}
+    for view in payload.get("views", []):
+        image_name = view.get("image_name", "")
+        if image_name:
+            views[image_name] = view
+    return views
+
+
+def _image_with_title(image, title, width=260, title_h=30):
+    from PIL import Image, ImageDraw, ImageFont
+
+    image = image.convert("RGB")
+    scale = width / max(1, image.width)
+    height = max(1, int(image.height * scale))
+    image = image.resize((width, height), Image.BICUBIC)
+    out = Image.new("RGB", (width, height + title_h), "white")
+    out.paste(image, (0, title_h))
+    draw = ImageDraw.Draw(out)
+    try:
+        font = ImageFont.truetype("arial.ttf", 15)
+    except Exception:
+        font = ImageFont.load_default()
+    draw.text((8, 7), title, fill=(0, 0, 0), font=font)
+    return out
+
+
+def _blank_tile(width=260, height=176, title=""):
+    from PIL import Image
+    return _image_with_title(Image.new("RGB", (width, height), (245, 245, 245)), title, width=width)
+
+
+def build_periodic_rgb_depth_comparisons(raw_root, out_dir, experiments, iterations, max_views):
+    try:
+        from PIL import Image, ImageDraw
+    except Exception as exc:
+        return [{"status": "skipped", "error": f"pillow_missing:{exc}"}]
+    if not raw_root.exists():
+        return [{"status": "missing_data", "error": f"raw_output_root_not_found:{raw_root}"}]
+
+    generated = []
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for iteration in iterations:
+        manifests = {exp: _load_periodic_manifest(raw_root, exp, iteration) for exp in experiments}
+        available = [set(v.keys()) for v in manifests.values() if v]
+        if not available:
+            generated.append({"iteration": iteration, "status": "missing_data", "error": "no_periodic_manifests"})
+            continue
+        common_views = sorted(set.intersection(*available))[:max_views]
+        for image_name in common_views:
+            first_view = next((m[image_name] for m in manifests.values() if image_name in m), {})
+            cam_id = first_view.get("cam_id", "")
+            row_rgb = []
+            row_depth = []
+            gt_path = _local_periodic_asset(raw_root, experiments[0], iteration, first_view.get("gt_rgb_path", ""))
+            if gt_path and gt_path.exists():
+                row_rgb.append(_image_with_title(Image.open(gt_path), f"GT cam{cam_id} {image_name}"))
+            else:
+                row_rgb.append(_blank_tile(title=f"GT cam{cam_id} {image_name}"))
+            row_depth.append(_blank_tile(title="Depth"))
+            for exp in experiments:
+                view = manifests.get(exp, {}).get(image_name, {})
+                rgb_path = _local_periodic_asset(raw_root, exp, iteration, view.get("rendered_rgb_path", ""))
+                depth_path = _local_periodic_asset(raw_root, exp, iteration, view.get("depth_path", ""))
+                label = label_for(exp)
+                row_rgb.append(_image_with_title(Image.open(rgb_path), f"{label} RGB") if rgb_path and rgb_path.exists() else _blank_tile(title=f"{label} RGB"))
+                row_depth.append(_image_with_title(Image.open(depth_path), f"{label} Depth") if depth_path and depth_path.exists() else _blank_tile(title=f"{label} Depth"))
+            tiles = row_rgb + row_depth
+            cols = len(row_rgb)
+            tile_w = max(tile.width for tile in tiles)
+            tile_h = max(tile.height for tile in tiles)
+            canvas = Image.new("RGB", (cols * tile_w, 2 * tile_h + 42), "white")
+            draw = ImageDraw.Draw(canvas)
+            draw.text((12, 10), f"{iteration} | cam{cam_id} | view {image_name} | RGB and rendered depth comparison", fill=(0, 0, 0))
+            for idx, tile in enumerate(row_rgb):
+                canvas.paste(tile, (idx * tile_w, 42))
+            for idx, tile in enumerate(row_depth):
+                canvas.paste(tile, (idx * tile_w, 42 + tile_h))
+            out_path = out_dir / iteration / f"{iteration}_cam{cam_id}_{image_name}_rgb_depth_comparison.jpg"
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            canvas.save(out_path, quality=92)
+            generated.append({
+                "iteration": iteration,
+                "image_name": image_name,
+                "cam_id": cam_id,
+                "path": str(out_path),
+                "status": "ok",
+            })
+    return generated
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--paper-dir", default="outputs/paper_evidence_full_scene_v2")
     parser.add_argument("--out-dir", default="outputs/paper_results_full_scene_v2")
+    parser.add_argument("--raw-output-root", default="")
+    parser.add_argument("--formal-experiments", nargs="*", default=FORMAL_EXPERIMENTS)
+    parser.add_argument("--comparison-iterations", nargs="*", default=["iter_005000", "iter_010000", "iter_015000", "iter_020000", "iter_025000", "iter_030000"])
+    parser.add_argument("--comparison-max-views", type=int, default=15)
     parser.add_argument("--max-selected-figures-per-category", type=int, default=6)
     args = parser.parse_args()
 
@@ -470,6 +622,15 @@ def main():
         plot_initialization_audit(read_csv(tables_dir / "initialization_summary.csv"), out_plots),
     ]
     copied_figures = copy_selected_figures(paper_dir, out_dir / "figures", args.max_selected_figures_per_category)
+    comparison_figures = []
+    if args.raw_output_root:
+        comparison_figures = build_periodic_rgb_depth_comparisons(
+            Path(args.raw_output_root),
+            out_dir / "figures" / "formal_rgb_depth_comparisons",
+            args.formal_experiments,
+            args.comparison_iterations,
+            args.comparison_max_views,
+        )
 
     missing = read_csv(tables_dir / "missing_evidence_report.csv")
     manifest = {
@@ -487,6 +648,7 @@ def main():
         },
         "plots": plot_rows,
         "selected_figures": copied_figures,
+        "comparison_figures": comparison_figures,
         "missing_evidence_count": len(missing),
         "claim_gate": {
             "has_no_lidar_safe_rows": any(row.get("claim_safe_no_lidar") == "true" for row in audit_rows),
@@ -516,6 +678,8 @@ def main():
         "- `plots/lidar_depth_loss_curve.png`\n"
         "- `plots/feedback_trigger_timeline.png`\n"
         "- `plots/initialization_audit.png`\n\n"
+        "## Formal RGB/Depth Comparisons\n\n"
+        "`figures/formal_rgb_depth_comparisons/` contains same-view A/B/C/PV-C RGB and rendered-depth panels when `--raw-output-root` is provided.\n\n"
         "## Gate\n\n"
         "Do not claim no-LiDAR results unless `table_no_lidar_audit` has `claim_safe_no_lidar=true` for the formal rows and the evidence pack missing report is acceptable.\n"
     )

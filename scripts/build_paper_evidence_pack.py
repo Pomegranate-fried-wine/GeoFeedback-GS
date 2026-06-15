@@ -117,10 +117,13 @@ def copy_file(src, dst):
     return str(dst)
 
 
-def find_experiment_dirs(root):
+def find_experiment_dirs(root, allowed=None):
     if not root.exists():
         return []
+    allowed = set(allowed or [])
     dirs = [p for p in root.iterdir() if p.is_dir()]
+    if allowed:
+        dirs = [p for p in dirs if p.name in allowed]
     order = {name: idx for idx, name in enumerate(EXPERIMENT_ORDER)}
     return sorted(dirs, key=lambda p: (order.get(p.name, 999), p.name))
 
@@ -458,6 +461,7 @@ def main():
     parser.add_argument("--output-root", default="outputs/a100_main_experiments")
     parser.add_argument("--paper-dir", default="outputs/paper_evidence_full_scene_v2")
     parser.add_argument("--final-eval-root", default="outputs/final_evaluation_test_only_v2")
+    parser.add_argument("--experiments", nargs="*", default=None, help="Optional experiment directory names to include from --output-root.")
     parser.add_argument("--max-figures-per-category", type=int, default=12)
     args = parser.parse_args()
 
@@ -482,7 +486,7 @@ def main():
     scalar_trace_rows = []
     initialization_rows = []
 
-    for exp_dir in find_experiment_dirs(output_root):
+    for exp_dir in find_experiment_dirs(output_root, args.experiments):
         exp_name = exp_dir.name
         feedback_rows = collect_feedback_rows(exp_name, exp_dir, manifest_dir)
         metrics = collect_final_metrics(exp_dir)
@@ -534,6 +538,7 @@ def main():
     summary = {
         "output_root": str(output_root),
         "paper_dir": str(paper_dir),
+        "included_experiments": args.experiments or "all",
         "experiment_count": len(experiment_rows),
         "tables": {
             "main_final_metrics": str(table_dir / "main_final_metrics.csv"),
