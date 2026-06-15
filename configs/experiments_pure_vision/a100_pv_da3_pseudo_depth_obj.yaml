@@ -1,0 +1,24 @@
+_BASE_: a100_pv_baseline_colmap_obj.yaml
+exp_name: a100_pv_da3_pseudo_depth_obj
+model_path: outputs/a100_pure_vision_smoke/pv_da3_pseudo_depth_obj
+geovit:
+  enabled: true
+data:
+  initialization_note: pure_vision_colmap_background_random_box_objects_da3_training
+  da3_confidence_threshold: 0.5
+train:
+  guided_feedback:
+    enabled: true
+    supervision_mode: da3_unsupervised
+    use_lidar_depth: false
+    use_da3_structure: true
+    assert_no_lidar_supervision: true
+    feedback_mode: global
+  feedback_controller:
+    enabled: false
+    mode: "off"
+  gaussian_control:
+    enabled: false
+    control_mode: "off"
+optim:
+  lambda_depth_lidar: 0.0

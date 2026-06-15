@@ -150,10 +150,16 @@ def collect_final_metrics(exp_dir):
 
 def collect_eval_rows(exp_name, exp_dir):
     rows = []
-    summary_path = exp_dir / "metrics" / "eval_summary.csv"
-    if summary_path.exists():
-        for row in read_csv_rows(summary_path):
-            rows.append({"experiment": exp_name, "source": str(summary_path), **row})
+    for protocol, filename in [
+        ("sampled_diagnostic_eval", "eval_summary_sampled.csv"),
+        ("full_split_training_eval", "eval_summary_full.csv"),
+        ("legacy_eval", "eval_summary.csv"),
+    ]:
+        summary_path = exp_dir / "metrics" / filename
+        if summary_path.exists():
+            for row in read_csv_rows(summary_path):
+                row.setdefault("eval_protocol", protocol)
+                rows.append({"experiment": exp_name, "source": str(summary_path), **row})
     return rows
 
 
@@ -171,7 +177,11 @@ def collect_final_evaluation_rows(final_eval_root):
 
 
 def collect_latest_per_view_rows(exp_name, exp_dir):
-    latest = latest_file(list((exp_dir / "metrics").glob("eval_iter_*_per_view.csv")))
+    latest = latest_file(
+        list((exp_dir / "metrics").glob("eval_full_iter_*_per_view.csv"))
+        + list((exp_dir / "metrics").glob("eval_sampled_iter_*_per_view.csv"))
+        + list((exp_dir / "metrics").glob("eval_iter_*_per_view.csv"))
+    )
     rows = []
     if latest:
         for row in read_csv_rows(latest):
@@ -420,8 +430,10 @@ def missing_items(exp_name, exp_dir, feedback_rows):
         rows.append({"experiment": exp_name, "missing": "representative panels", "severity": "figure_gap"})
     if not (exp_dir / "input_ply" / "initialization_manifest.json").exists():
         rows.append({"experiment": exp_name, "missing": "input_ply/initialization_manifest.json", "severity": "initialization_audit_gap"})
-    if not (exp_dir / "metrics" / "eval_summary.csv").exists():
-        rows.append({"experiment": exp_name, "missing": "metrics/eval_summary.csv", "severity": "paper_table_gap"})
+    if not (exp_dir / "metrics" / "eval_summary_sampled.csv").exists():
+        rows.append({"experiment": exp_name, "missing": "metrics/eval_summary_sampled.csv", "severity": "training_curve_gap"})
+    if not (exp_dir / "metrics" / "eval_summary_full.csv").exists():
+        rows.append({"experiment": exp_name, "missing": "metrics/eval_summary_full.csv", "severity": "full_training_eval_gap"})
     return rows
 
 
@@ -524,7 +536,7 @@ def main():
         "missing_evidence_count": len(missing_rows),
         "notes": [
             "Metrics are copied or summarized only from existing run outputs.",
-            "Training-time eval_summary.csv is periodic full-split training eval after the 1000-iteration protocol update; final_full_evaluation_summary.csv remains the paper-grade main result.",
+            "Training-time eval_summary.csv combines sampled_diagnostic_eval and full_split_training_eval rows when available; final_full_evaluation_summary.csv remains the paper-grade main result.",
             "Paper main results should use final_full_evaluation_summary.csv when available.",
             "DA3-unsupervised paper claims should require uses_lidar_supervision=false and uses_lidar_selected_pixels=false in safety/feedback tables.",
             "No-LiDAR initialization claims should require uses_lidar_initialization=false in initialization_summary.csv.",
@@ -542,7 +554,7 @@ def main():
         "- `tables/main_final_metrics.csv`: final/global experiment metrics.\n"
         "- `tables/final_full_evaluation_summary.csv`: paper-grade full final evaluation summary when available.\n"
         "- `tables/initialization_summary.csv`: initialization source and LiDAR-init leakage audit.\n"
-        "- `tables/eval_summary.csv`: periodic full-split training evaluation mean/median/outlier summary.\n"
+        "- `tables/eval_summary.csv`: training evaluation rows with `eval_protocol` set to sampled diagnostic or full-split training eval.\n"
         "- `tables/eval_latest_per_view.csv`: latest per-view evaluation diagnostics.\n"
         "- `tables/train_scalar_trace.csv`: per-iteration training losses and diagnostic scalars.\n"
         "- `tables/region_lidar_geometry_metrics.csv`: region-local geometry metrics with `valid_lidar_count` and confidence.\n"

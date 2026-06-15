@@ -1,0 +1,40 @@
+_BASE_: ../base/geoguardgs_base.yaml
+exp_name: a100_pv_baseline_colmap_obj
+model_path: outputs/a100_pure_vision_smoke/pv_baseline_colmap_obj
+data:
+  use_colmap: true
+  filter_colmap: true
+  allow_lidar_initialization: false
+  require_no_lidar_initialization: true
+  initialization_note: pure_vision_colmap_background_random_box_objects
+  object_initialization_mode: random_box
+  scale_alignment_source: colmap_sfm
+  selected_frames: [0, 14]
+  cameras: [0, 1, 2, 3, 4]
+model:
+  nsg:
+    include_obj: true
+    include_sky: false
+train:
+  iterations: 3000
+  test_iterations: [1000, 2000, 3000]
+  save_iterations: [1000, 2000, 3000]
+  checkpoint_iterations: [1000, 2000, 3000]
+  eval_sampled_interval: 1000
+  eval_full_interval: 3000
+  eval_panel_interval: 1000
+  periodic_eval_interval: 1000
+  guided_feedback:
+    enabled: false
+    supervision_mode: da3_unsupervised
+    use_lidar_depth: false
+    use_da3_structure: false
+    assert_no_lidar_supervision: true
+  feedback_controller:
+    enabled: false
+    mode: "off"
+  gaussian_control:
+    enabled: false
+    control_mode: "off"
+optim:
+  lambda_depth_lidar: 0.0

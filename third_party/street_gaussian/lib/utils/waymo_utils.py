@@ -485,11 +485,20 @@ def generate_dataparser_outputs(
         initialization_manifest = {
             "uses_lidar_training_supervision": bool(cfg.data.get("uses_lidar_training_supervision", False)),
             "uses_lidar_initialization": False,
+            "uses_lidar_background_initialization": False,
+            "uses_lidar_object_initialization": False,
+            "uses_lidar_supervision": bool(cfg.data.get("uses_lidar_training_supervision", False)),
             "initialization_source": "colmap_sfm" if use_colmap and not allow_lidar_initialization else "lidar_pointcloud",
             "pointcloud_source": "colmap" if use_colmap and not allow_lidar_initialization else "lidar",
+            "background_init_source": "colmap" if use_colmap and not allow_lidar_initialization else "lidar",
+            "object_init_source": cfg.data.get("object_initialization_mode", "lidar_object_points"),
             "colmap_binary": colmap_binary,
             "colmap_point_count": 0,
+            "da3_pseudo_point_count": 0,
+            "da3_confidence_threshold": cfg.data.get("da3_confidence_threshold", ""),
+            "scale_alignment_source": cfg.data.get("scale_alignment_source", "not_applicable"),
             "lidar_point_count_used_for_init": 0,
+            "lidar_object_point_count_used_for_init": 0,
             "allow_lidar_initialization": allow_lidar_initialization,
             "require_no_lidar_initialization": require_no_lidar_initialization,
         }
@@ -534,6 +543,21 @@ def generate_dataparser_outputs(
                     "Set data.use_colmap=true, data.filter_colmap=true, and provide a working COLMAP binary."
                 )
             print('initialize from colmap pointcloud only; LiDAR pointcloud initialization disabled')
+            object_init_mode = cfg.data.get("object_initialization_mode", "random_box")
+            if cfg.model.nsg.get("include_obj", True) and object_init_mode not in {"random_box", "da3_object_pseudo_points"}:
+                raise RuntimeError(
+                    "Pure-vision object-aware initialization requires "
+                    "data.object_initialization_mode=random_box or da3_object_pseudo_points."
+                )
+            initialization_manifest["initialization_source"] = "pure_vision_colmap_object_aware"
+            initialization_manifest["pointcloud_source"] = "colmap_background"
+            initialization_manifest["background_init_source"] = "colmap"
+            initialization_manifest["object_init_source"] = object_init_mode if cfg.model.nsg.get("include_obj", True) else "not_applicable"
+            initialization_manifest["uses_lidar_initialization"] = False
+            initialization_manifest["uses_lidar_background_initialization"] = False
+            initialization_manifest["uses_lidar_object_initialization"] = False
+            initialization_manifest["lidar_point_count_used_for_init"] = 0
+            initialization_manifest["lidar_object_point_count_used_for_init"] = 0
             points_xyz_dict['lidar'] = np.empty((0, 3), dtype=np.float32)
             points_rgb_dict['lidar'] = np.empty((0, 3), dtype=np.float32)
             points_xyz_dict['colmap'] = points_colmap_xyz
@@ -555,6 +579,8 @@ def generate_dataparser_outputs(
                      
         print('initialize from lidar pointcloud')
         initialization_manifest["uses_lidar_initialization"] = True
+        initialization_manifest["uses_lidar_background_initialization"] = True
+        initialization_manifest["uses_lidar_object_initialization"] = True
         if require_no_lidar_initialization:
             raise RuntimeError(
                 "No-LiDAR initialization requested, but code path is about to read Waymo pointcloud.npz. "

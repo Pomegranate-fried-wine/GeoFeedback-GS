@@ -10,18 +10,17 @@ paths:
 2. `_write_periodic_eval()` writes fixed-view visual panels under
    `periodic_eval/iter_XXXXXX/`.
 
-`training_report()` now evaluates every configured `train.test_iterations`
-entry, which is every 1000 iterations in the full-scene base config:
+`training_report()` now has two training-time protocols:
 
-- `test/test_view`: `scene.getTestCameras()`, i.e. the dataset test split.
-- `test/train_view`: the full `scene.getTrainCameras()` split.
+- `sampled_diagnostic_eval`: every 1000 iterations, up to 15 train views and
+  up to 15 test views.
+- `full_split_training_eval`: every 5000 iterations, full train and full test
+  splits when enabled.
 
-Therefore the new training-time curve source is full split evaluation at 1000
-iteration cadence. `eval_summary.csv` stores mean/median/min/max L1 and PSNR
-over those evaluated views for each training checkpoint. The matching
-`eval_iter_XXXXXX_per_view.csv` stores per-view diagnostics for that iteration,
-including camera id, image name, valid pixels, render/GT statistics,
-accumulation/depth statistics, and warnings.
+Both protocols report `test/test_view` from `scene.getTestCameras()` and
+`test/train_view` from `scene.getTrainCameras()`, with the sampled protocol
+using a deterministic subsample. CSV rows include `eval_protocol`, so sampled
+and full-split curves cannot be mixed silently.
 
 `_write_periodic_eval()` is a visual diagnostic. It now defaults to 15 fixed
 views, 5 cameras x 3 frames, and saves comparison panels every 1000 iterations.
@@ -39,9 +38,10 @@ training views. Those older curves can shake because:
   sample;
 - train-time eval is interleaved with checkpoint/save/densification events.
 
-After the 1000-iteration full-split update, new curves are much more rigorous
-and can be used as training-dynamics figures. The main quantitative paper table
-should still use final full evaluation at the chosen checkpoint.
+After the sampled/full split update, sampled curves should be used only for
+low-cost training diagnostics; full-split curves can support training-dynamics
+figures at 5000-iteration cadence. The main quantitative paper table should
+still use final full evaluation at the chosen checkpoint.
 
 ## Original Street Gaussians reference
 

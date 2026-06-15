@@ -508,7 +508,7 @@ def _write_training_log_image(iteration, viewpoint_cam, gt_image, image, depth, 
 def _write_periodic_eval(iteration, eval_cameras, scene, renderer, da3_bridge, guided_feedback, train_args, previous_stats):
     if not bool(getattr(train_args, "periodic_eval_enabled", True)):
         return
-    interval = int(getattr(train_args, "periodic_eval_interval", 500) or 0)
+    interval = int(getattr(train_args, "eval_panel_interval", getattr(train_args, "periodic_eval_interval", 1000)) or 0)
     if interval <= 0 or iteration % interval != 0:
         return
     iter_dir = os.path.join(cfg.model_path, "periodic_eval", f"iter_{iteration:06d}")
@@ -1148,7 +1148,7 @@ def _tensor_stats(prefix, tensor):
     }
 
 
-def _eval_metric_row(iteration, split_name, idx, viewpoint, render_pkg, image, gt_image, mask):
+def _eval_metric_row(iteration, split_name, idx, viewpoint, render_pkg, image, gt_image, mask, eval_protocol=""):
     acc = render_pkg.get("acc")
     depth = render_pkg.get("depth")
     mask_bool = mask.bool()
@@ -1186,6 +1186,7 @@ def _eval_metric_row(iteration, split_name, idx, viewpoint, render_pkg, image, g
 
     row = {
         "iteration": int(iteration),
+        "eval_protocol": eval_protocol,
         "split": split_name,
         "view_index": int(idx),
         "cam_id": viewpoint.meta.get("cam", "") if hasattr(viewpoint, "meta") else "",
@@ -1228,7 +1229,7 @@ def _append_eval_summary(path, rows, scalar_stats):
     for row in rows:
         by_split.setdefault(row["split"], []).append(row)
     fieldnames = [
-        "iteration", "split", "view_count", "l1_mean", "l1_median", "l1_min", "l1_max",
+        "iteration", "eval_protocol", "split", "view_count", "l1_mean", "l1_median", "l1_min", "l1_max",
         "psnr_mean", "psnr_median", "psnr_min", "psnr_max", "outlier_count",
         "outlier_views", "opacity_reset_interval", "opacity_reset_iteration",
         "densification_iteration", "checkpoint_iteration", "save_iteration",
@@ -1247,6 +1248,7 @@ def _append_eval_summary(path, rows, scalar_stats):
             ]
             writer.writerow({
                 "iteration": split_rows[0]["iteration"],
+                "eval_protocol": split_rows[0].get("eval_protocol", ""),
                 "split": split_name,
                 "view_count": len(split_rows),
                 "l1_mean": float(np.mean(l1_values)) if l1_values.size else "",
@@ -1267,6 +1269,72 @@ def _append_eval_summary(path, rows, scalar_stats):
             })
 
 
+def _sorted_cameras_for_eval(cameras):
+    return sorted(
+        list(cameras),
+        key=lambda cam: (
+            int(getattr(cam, "meta", {}).get("frame_idx", getattr(cam, "meta", {}).get("frame", 0))),
+            int(getattr(cam, "meta", {}).get("cam", 0)),
+            str(getattr(cam, "image_name", "")),
+        ),
+    )
+
+
+def _sample_cameras_for_eval(cameras, count):
+    cameras = _sorted_cameras_for_eval(cameras)
+    count = int(count or 0)
+    if count <= 0 or len(cameras) <= count:
+        return cameras
+    if count == 1:
+        return [cameras[len(cameras) // 2]]
+    indices = np.linspace(0, len(cameras) - 1, count).round().astype(np.int64)
+    return [cameras[int(idx)] for idx in indices]
+
+
+def _run_eval_configs(tb_writer, iteration, scalar_stats, scene, renderer, current_viewpoint, validation_configs, eval_protocol):
+    per_view_rows = []
+    for config in validation_configs:
+        if config['cameras'] and len(config['cameras']) > 0:
+            split_rows = []
+            for idx, viewpoint in enumerate(config['cameras']):
+                render_pkg = renderer.render(viewpoint, scene.gaussians)
+                image = torch.clamp(render_pkg["rgb"], 0.0, 1.0)
+                gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
+                if tb_writer and (idx < 5):
+                    tb_writer.add_images(config['name'] + "_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
+                    if iteration == cfg.train.test_iterations[0]:
+                        tb_writer.add_images(config['name'] + "_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
+
+                if hasattr(viewpoint, 'original_mask'):
+                    mask = viewpoint.original_mask.cuda().bool()
+                else:
+                    mask = torch.ones_like(gt_image[0]).bool()
+                row = _eval_metric_row(iteration, config["name"], idx, viewpoint, render_pkg, image, gt_image, mask, eval_protocol)
+                split_rows.append(row)
+                per_view_rows.append(row)
+                if current_viewpoint is not None:
+                    _restore_training_render_state(scene.gaussians, current_viewpoint)
+
+            l1_values = np.array([row["l1"] for row in split_rows if np.isfinite(row["l1"])], dtype=np.float64)
+            psnr_values = np.array([row["psnr"] for row in split_rows if np.isfinite(row["psnr"])], dtype=np.float64)
+            l1_test = float(np.mean(l1_values)) if l1_values.size else float("nan")
+            psnr_test = float(np.mean(psnr_values)) if psnr_values.size else float("nan")
+            psnr_median = float(np.median(psnr_values)) if psnr_values.size else float("nan")
+            low_rows = [row for row in split_rows if np.isfinite(row["psnr"]) and row["psnr"] < 10.0]
+            print(
+                "\n[ITER {}] Evaluating {} [{}]: L1 {} PSNR {} "
+                "median_psnr {} outliers {} views {}".format(
+                    iteration, config['name'], eval_protocol, l1_test, psnr_test,
+                    psnr_median, len(low_rows), len(split_rows)
+                )
+            )
+            if tb_writer:
+                tb_writer.add_scalar(config['name'] + f'/{eval_protocol} - l1_loss', l1_test, iteration)
+                tb_writer.add_scalar(config['name'] + f'/{eval_protocol} - psnr', psnr_test, iteration)
+                tb_writer.add_scalar(config['name'] + f'/{eval_protocol} - psnr_median', psnr_median, iteration)
+    return per_view_rows
+
+
 def training_report(tb_writer, iteration, scalar_stats, tensor_stats, testing_iterations, scene: Scene, renderer: StreetGaussianRenderer, current_viewpoint=None):
     if tb_writer:
         try:
@@ -1278,55 +1346,38 @@ def training_report(tb_writer, iteration, scalar_stats, tensor_stats, testing_it
             print('Failed to write to tensorboard')
             
             
-    # Report full train/test splits for paper-grade training curves.
-    if iteration in testing_iterations:
+    sampled_interval = int(getattr(cfg.train, "eval_sampled_interval", 0) or 0)
+    full_interval = int(getattr(cfg.train, "eval_full_interval", 0) or 0)
+    do_sampled = sampled_interval > 0 and iteration % sampled_interval == 0
+    do_full = full_interval > 0 and iteration % full_interval == 0
+
+    if do_sampled or do_full:
         torch.cuda.empty_cache()
-        validation_configs = ({'name': 'test/test_view', 'cameras' : scene.getTestCameras()},
-                              {'name': 'test/train_view', 'cameras' : scene.getTrainCameras()})
-
-        per_view_rows = []
-        for config in validation_configs:
-            if config['cameras'] and len(config['cameras']) > 0:
-                split_rows = []
-                for idx, viewpoint in enumerate(config['cameras']):
-                    render_pkg = renderer.render(viewpoint, scene.gaussians)
-                    image = torch.clamp(render_pkg["rgb"], 0.0, 1.0)
-                    gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
-                    if tb_writer and (idx < 5):
-                        tb_writer.add_images(config['name'] + "_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
-                        if iteration == testing_iterations[0]:
-                            tb_writer.add_images(config['name'] + "_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
-                    
-                    if hasattr(viewpoint, 'original_mask'):
-                        mask = viewpoint.original_mask.cuda().bool()
-                    else:
-                        mask = torch.ones_like(gt_image[0]).bool()
-                    row = _eval_metric_row(iteration, config["name"], idx, viewpoint, render_pkg, image, gt_image, mask)
-                    split_rows.append(row)
-                    per_view_rows.append(row)
-                    if current_viewpoint is not None:
-                        _restore_training_render_state(scene.gaussians, current_viewpoint)
-
-                l1_values = np.array([row["l1"] for row in split_rows if np.isfinite(row["l1"])], dtype=np.float64)
-                psnr_values = np.array([row["psnr"] for row in split_rows if np.isfinite(row["psnr"])], dtype=np.float64)
-                l1_test = float(np.mean(l1_values)) if l1_values.size else float("nan")
-                psnr_test = float(np.mean(psnr_values)) if psnr_values.size else float("nan")
-                psnr_median = float(np.median(psnr_values)) if psnr_values.size else float("nan")
-                low_rows = [row for row in split_rows if np.isfinite(row["psnr"]) and row["psnr"] < 10.0]
-                print(
-                    "\n[ITER {}] Evaluating {}: L1 {} PSNR {} "
-                    "median_psnr {} outliers {}".format(
-                        iteration, config['name'], l1_test, psnr_test, psnr_median, len(low_rows)
-                    )
-                )
-                if tb_writer:
-                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
-                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
-                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr_median', psnr_median, iteration)
 
         metrics_dir = os.path.join(cfg.model_path, "metrics")
-        _write_eval_csv(os.path.join(metrics_dir, f"eval_iter_{iteration:06d}_per_view.csv"), per_view_rows)
-        _append_eval_summary(os.path.join(metrics_dir, "eval_summary.csv"), per_view_rows, scalar_stats)
+        if do_sampled:
+            sampled_configs = (
+                {
+                    'name': 'test/test_view',
+                    'cameras': _sample_cameras_for_eval(scene.getTestCameras(), getattr(cfg.train, "eval_sampled_test_view_count", 15)),
+                },
+                {
+                    'name': 'test/train_view',
+                    'cameras': _sample_cameras_for_eval(scene.getTrainCameras(), getattr(cfg.train, "eval_sampled_train_view_count", 15)),
+                },
+            )
+            sampled_rows = _run_eval_configs(tb_writer, iteration, scalar_stats, scene, renderer, current_viewpoint, sampled_configs, "sampled_diagnostic_eval")
+            _write_eval_csv(os.path.join(metrics_dir, f"eval_sampled_iter_{iteration:06d}_per_view.csv"), sampled_rows)
+            _append_eval_summary(os.path.join(metrics_dir, "eval_summary_sampled.csv"), sampled_rows, scalar_stats)
+        if do_full:
+            full_configs = []
+            if bool(getattr(cfg.train, "eval_full_test_enabled", True)):
+                full_configs.append({'name': 'test/test_view', 'cameras': _sorted_cameras_for_eval(scene.getTestCameras())})
+            if bool(getattr(cfg.train, "eval_full_train_enabled", True)):
+                full_configs.append({'name': 'test/train_view', 'cameras': _sorted_cameras_for_eval(scene.getTrainCameras())})
+            full_rows = _run_eval_configs(tb_writer, iteration, scalar_stats, scene, renderer, current_viewpoint, full_configs, "full_split_training_eval")
+            _write_eval_csv(os.path.join(metrics_dir, f"eval_full_iter_{iteration:06d}_per_view.csv"), full_rows)
+            _append_eval_summary(os.path.join(metrics_dir, "eval_summary_full.csv"), full_rows, scalar_stats)
         if current_viewpoint is not None:
             _restore_training_render_state(scene.gaussians, current_viewpoint)
 

@@ -1,0 +1,26 @@
+_BASE_: a100_pv_da3_pseudo_depth_obj.yaml
+exp_name: a100_pv_da3_feedback_obj
+model_path: outputs/a100_pure_vision_smoke/pv_da3_feedback_obj
+train:
+  guided_feedback:
+    feedback_mode: softpatch
+  feedback_controller:
+    enabled: true
+    mode: feedback_update
+    start_iter: 1000
+    interval: 1000
+    risk_source: da3_boundary
+    supervision_mode: da3_unsupervised
+    feedback_mode: group_softpatch
+    repair_mode: "none"
+    contribution_source: live_current_model
+    recompute_risk: true
+    recompute_contribution: true
+    recompute_responsible_groups: true
+    recompute_softpatch: true
+    run_counterfactual: false
+    run_candidate_tagging: true
+    allow_parameter_modification: false
+  gaussian_control:
+    enabled: false
+    control_mode: "off"

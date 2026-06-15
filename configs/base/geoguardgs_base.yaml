@@ -78,6 +78,13 @@ train:
   log_image_interval: 0
   log_fixed_view: true
   log_fixed_view_ids: []
+  eval_sampled_interval: 1000
+  eval_full_interval: 5000
+  eval_panel_interval: 1000
+  eval_sampled_train_view_count: 15
+  eval_sampled_test_view_count: 15
+  eval_full_train_enabled: true
+  eval_full_test_enabled: true
   periodic_eval_enabled: true
   periodic_eval_interval: 1000
   periodic_eval_view_ids: []
