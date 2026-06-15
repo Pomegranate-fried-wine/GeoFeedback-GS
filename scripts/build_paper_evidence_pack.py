@@ -206,11 +206,19 @@ def collect_initialization_row(exp_name, exp_dir):
         "status": "present" if manifest.exists() else "missing",
         "uses_lidar_training_supervision": "",
         "uses_lidar_initialization": "",
+        "uses_lidar_background_initialization": "",
+        "uses_lidar_object_initialization": "",
         "initialization_source": "",
         "pointcloud_source": "",
+        "background_init_source": "",
+        "object_init_source": "",
         "colmap_binary": "",
         "colmap_point_count": "",
+        "da3_pseudo_point_count": "",
+        "da3_confidence_threshold": "",
+        "scale_alignment_source": "",
         "lidar_point_count_used_for_init": "",
+        "lidar_object_point_count_used_for_init": "",
         "no_lidar_leakage": "unknown",
     }
     if manifest.exists():
@@ -218,11 +226,19 @@ def collect_initialization_row(exp_name, exp_dir):
         for key in [
             "uses_lidar_training_supervision",
             "uses_lidar_initialization",
+            "uses_lidar_background_initialization",
+            "uses_lidar_object_initialization",
             "initialization_source",
             "pointcloud_source",
+            "background_init_source",
+            "object_init_source",
             "colmap_binary",
             "colmap_point_count",
+            "da3_pseudo_point_count",
+            "da3_confidence_threshold",
+            "scale_alignment_source",
             "lidar_point_count_used_for_init",
+            "lidar_object_point_count_used_for_init",
         ]:
             row[key] = payload.get(key, "")
         row["no_lidar_leakage"] = "fail" if payload.get("uses_lidar_initialization", False) else "pass"
@@ -504,7 +520,7 @@ def main():
     write_csv(table_dir / "eval_latest_per_view.csv", eval_per_view_rows, per_view_fields)
     scalar_fields = sorted({key for row in scalar_trace_rows for key in row.keys()} | {"experiment", "source", "iteration"})
     write_csv(table_dir / "train_scalar_trace.csv", scalar_trace_rows, scalar_fields)
-    write_csv(table_dir / "initialization_summary.csv", initialization_rows, ["experiment", "manifest", "status", "uses_lidar_training_supervision", "uses_lidar_initialization", "initialization_source", "pointcloud_source", "colmap_binary", "colmap_point_count", "lidar_point_count_used_for_init", "no_lidar_leakage"])
+    write_csv(table_dir / "initialization_summary.csv", initialization_rows, ["experiment", "manifest", "status", "uses_lidar_training_supervision", "uses_lidar_initialization", "uses_lidar_background_initialization", "uses_lidar_object_initialization", "initialization_source", "pointcloud_source", "background_init_source", "object_init_source", "colmap_binary", "colmap_point_count", "da3_pseudo_point_count", "da3_confidence_threshold", "scale_alignment_source", "lidar_point_count_used_for_init", "lidar_object_point_count_used_for_init", "no_lidar_leakage"])
     write_csv(table_dir / "feedback_trigger_summary.csv", feedback_rows_all, ["experiment", "iteration", "status", "risk_source", "supervision_mode", "selected_pixels_count", "gaussian_group_count", "cuda_ok_count", "low_evidence_count", "live_cuda_contribution", "uses_lidar_supervision", "uses_lidar_selected_pixels", "uses_lidar_initialization", "initialization_source", "gaussian_parameters_modified", "real_repair_enabled", "manifest"])
     write_csv(table_dir / "safety_audit_summary.csv", safety_rows, ["experiment", "iteration", "source", "status", "uses_lidar_supervision", "uses_lidar_selected_pixels", "gaussian_parameters_modified", "real_repair_enabled", "allow_parameter_modification", "safety_checks"])
     write_csv(table_dir / "repair_candidate_summary.csv", repair_rows, ["experiment", "iteration", "mode", "source", "status", "modified_count", "protected_count", "skipped_count", "candidate_count", "rgb_delta"])

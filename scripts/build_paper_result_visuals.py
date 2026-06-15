@@ -121,6 +121,7 @@ def choose_last_eval_rows(eval_rows):
 
 def build_main_result_table(tables_dir):
     final_rows = read_csv(tables_dir / "final_full_evaluation_summary.csv")
+    init_rows = {row.get("experiment", ""): row for row in read_csv(tables_dir / "initialization_summary.csv")}
     final_main = [
         row for row in final_rows
         if row.get("table") == "summary_main" or (row.get("scope") == "full_image" and row.get("split") == "test")
@@ -129,6 +130,7 @@ def build_main_result_table(tables_dir):
         rows = []
         for row in final_main:
             exp = row.get("experiment", "")
+            init = init_rows.get(exp, {})
             rows.append({
                 "experiment": exp,
                 "label": label_for(exp),
@@ -140,8 +142,8 @@ def build_main_result_table(tables_dir):
                 "ssim_mean": row.get("ssim_mean", ""),
                 "lpips_mean": row.get("lpips_mean", ""),
                 "outlier_count": "",
-                "uses_lidar_init": "",
-                "init_source": "",
+                "uses_lidar_init": init.get("uses_lidar_initialization", ""),
+                "init_source": init.get("initialization_source", ""),
                 "feedback_valid": "",
                 "feedback_total": "",
             })
