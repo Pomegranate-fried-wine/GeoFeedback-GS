@@ -4,6 +4,7 @@
 
 import json
 import os
+import csv
 import numpy as np
 import torch
 import cv2
@@ -989,6 +990,20 @@ def training():
                 scene.save(iteration)
 
             structure_updates_enabled = not bool(getattr(training_args, "disable_structure_updates", False))
+            scalar_dict["save_iteration"] = int(iteration in training_args.save_iterations)
+            scalar_dict["checkpoint_iteration"] = int(iteration in training_args.checkpoint_iterations)
+            scalar_dict["densification_iteration"] = int(
+                structure_updates_enabled
+                and iteration < optim_args.densify_until_iter
+                and iteration > optim_args.densify_from_iter
+                and iteration % optim_args.densification_interval == 0
+            )
+            scalar_dict["opacity_reset_interval"] = int(optim_args.opacity_reset_interval)
+            scalar_dict["opacity_reset_iteration"] = int(
+                structure_updates_enabled
+                and iteration < optim_args.densify_until_iter
+                and iteration % optim_args.opacity_reset_interval == 0
+            )
 
             # Densification
             if structure_updates_enabled and iteration < optim_args.densify_until_iter:
@@ -1010,6 +1025,17 @@ def training():
 
                         scalar_dict.update(scalars)
                         tensor_dict.update(tensors)
+
+            training_report(
+                tb_writer,
+                iteration,
+                scalar_dict,
+                tensor_dict,
+                training_args.test_iterations,
+                scene,
+                gaussians_renderer,
+                current_viewpoint=viewpoint_cam,
+            )
                         
             # Reset opacity
             if structure_updates_enabled and iteration < optim_args.densify_until_iter:
@@ -1017,8 +1043,6 @@ def training():
                     gaussians.reset_opacity()
                 if data_args.white_background and iteration == optim_args.densify_from_iter:
                     gaussians.reset_opacity()
-
-            training_report(tb_writer, iteration, scalar_dict, tensor_dict, training_args.test_iterations, scene, gaussians_renderer)
 
             # Optimizer step
             if iteration < training_args.iterations:
@@ -1068,7 +1092,149 @@ def prepare_output_and_logger():
         print("Tensorboard not available: not logging progress")
     return tb_writer
 
-def training_report(tb_writer, iteration, scalar_stats, tensor_stats, testing_iterations, scene: Scene, renderer: StreetGaussianRenderer):
+
+def _tensor_stats(prefix, tensor):
+    if tensor is None:
+        return {
+            f"{prefix}_min": "",
+            f"{prefix}_max": "",
+            f"{prefix}_mean": "",
+        }
+    values = tensor.detach()
+    finite = values[torch.isfinite(values)]
+    if finite.numel() == 0:
+        return {
+            f"{prefix}_min": "",
+            f"{prefix}_max": "",
+            f"{prefix}_mean": "",
+        }
+    return {
+        f"{prefix}_min": float(finite.min().item()),
+        f"{prefix}_max": float(finite.max().item()),
+        f"{prefix}_mean": float(finite.mean().item()),
+    }
+
+
+def _eval_metric_row(iteration, split_name, idx, viewpoint, render_pkg, image, gt_image, mask):
+    acc = render_pkg.get("acc")
+    depth = render_pkg.get("depth")
+    mask_bool = mask.bool()
+    valid_pixel_count = int(torch.count_nonzero(mask_bool).item())
+    l1_value = float(l1_loss(image, gt_image, mask_bool).mean().detach().cpu().item()) if valid_pixel_count > 0 else float("nan")
+    psnr_value = float(psnr(image, gt_image, mask_bool).mean().detach().cpu().item()) if valid_pixel_count > 0 else float("nan")
+    warnings = []
+    if valid_pixel_count == 0:
+        warnings.append("empty_mask")
+    if tuple(image.shape) != tuple(gt_image.shape):
+        warnings.append("rgb_shape_mismatch")
+    if psnr_value < 10.0:
+        warnings.append("low_psnr")
+    if l1_value > 0.25:
+        warnings.append("high_l1")
+
+    acc_nonzero_ratio = ""
+    if acc is not None:
+        acc_nonzero_ratio = float(torch.count_nonzero(acc.detach() > 1e-6).item()) / float(acc.numel())
+        acc_mean = float(acc.detach().mean().item())
+        if acc_nonzero_ratio < 0.01:
+            warnings.append("near_empty_acc")
+        if acc_mean > 0.99:
+            warnings.append("saturated_acc")
+
+    depth_positive_count = ""
+    depth_finite_count = ""
+    if depth is not None:
+        depth_detached = depth.detach()
+        finite = torch.isfinite(depth_detached)
+        depth_finite_count = int(torch.count_nonzero(finite).item())
+        depth_positive_count = int(torch.count_nonzero(finite & (depth_detached > 0)).item())
+        if depth_positive_count == 0:
+            warnings.append("empty_positive_depth")
+
+    row = {
+        "iteration": int(iteration),
+        "split": split_name,
+        "view_index": int(idx),
+        "cam_id": viewpoint.meta.get("cam", "") if hasattr(viewpoint, "meta") else "",
+        "image_name": getattr(viewpoint, "image_name", ""),
+        "uid": getattr(viewpoint, "uid", ""),
+        "l1": l1_value,
+        "psnr": psnr_value,
+        "valid_pixel_count": valid_pixel_count,
+        "rgb_shape": "x".join(str(v) for v in tuple(image.shape)),
+        "gt_shape": "x".join(str(v) for v in tuple(gt_image.shape)),
+        "acc_nonzero_ratio": acc_nonzero_ratio,
+        "depth_positive_count": depth_positive_count,
+        "depth_finite_count": depth_finite_count,
+        "warnings": ";".join(sorted(set(warnings))),
+    }
+    row.update(_tensor_stats("render_rgb", image))
+    row.update(_tensor_stats("gt_rgb", gt_image))
+    row.update(_tensor_stats("acc", acc))
+    row.update(_tensor_stats("depth", depth))
+    return row
+
+
+def _write_eval_csv(path, rows):
+    if not rows:
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fieldnames = list(rows[0].keys())
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _append_eval_summary(path, rows, scalar_stats):
+    if not rows:
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    exists = os.path.exists(path)
+    by_split = {}
+    for row in rows:
+        by_split.setdefault(row["split"], []).append(row)
+    fieldnames = [
+        "iteration", "split", "view_count", "l1_mean", "l1_median", "l1_min", "l1_max",
+        "psnr_mean", "psnr_median", "psnr_min", "psnr_max", "outlier_count",
+        "outlier_views", "opacity_reset_interval", "opacity_reset_iteration",
+        "densification_iteration", "checkpoint_iteration", "save_iteration",
+    ]
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if not exists:
+            writer.writeheader()
+        for split_name, split_rows in by_split.items():
+            l1_values = np.array([r["l1"] for r in split_rows if np.isfinite(r["l1"])], dtype=np.float64)
+            psnr_values = np.array([r["psnr"] for r in split_rows if np.isfinite(r["psnr"])], dtype=np.float64)
+            psnr_median = float(np.median(psnr_values)) if psnr_values.size else float("nan")
+            outliers = [
+                r for r in split_rows
+                if np.isfinite(r["psnr"]) and (r["psnr"] < 10.0 or r["psnr"] < psnr_median - 5.0)
+            ]
+            writer.writerow({
+                "iteration": split_rows[0]["iteration"],
+                "split": split_name,
+                "view_count": len(split_rows),
+                "l1_mean": float(np.mean(l1_values)) if l1_values.size else "",
+                "l1_median": float(np.median(l1_values)) if l1_values.size else "",
+                "l1_min": float(np.min(l1_values)) if l1_values.size else "",
+                "l1_max": float(np.max(l1_values)) if l1_values.size else "",
+                "psnr_mean": float(np.mean(psnr_values)) if psnr_values.size else "",
+                "psnr_median": psnr_median if psnr_values.size else "",
+                "psnr_min": float(np.min(psnr_values)) if psnr_values.size else "",
+                "psnr_max": float(np.max(psnr_values)) if psnr_values.size else "",
+                "outlier_count": len(outliers),
+                "outlier_views": ";".join(f"cam{r['cam_id']}:{r['image_name']}" for r in outliers),
+                "opacity_reset_interval": scalar_stats.get("opacity_reset_interval", ""),
+                "opacity_reset_iteration": scalar_stats.get("opacity_reset_iteration", 0),
+                "densification_iteration": scalar_stats.get("densification_iteration", 0),
+                "checkpoint_iteration": scalar_stats.get("checkpoint_iteration", 0),
+                "save_iteration": scalar_stats.get("save_iteration", 0),
+            })
+
+
+def training_report(tb_writer, iteration, scalar_stats, tensor_stats, testing_iterations, scene: Scene, renderer: StreetGaussianRenderer, current_viewpoint=None):
     if tb_writer:
         try:
             for key, value in scalar_stats.items():
@@ -1085,12 +1251,13 @@ def training_report(tb_writer, iteration, scalar_stats, tensor_stats, testing_it
         validation_configs = ({'name': 'test/test_view', 'cameras' : scene.getTestCameras()},
                               {'name': 'test/train_view', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 30, 5)]})
 
+        per_view_rows = []
         for config in validation_configs:
             if config['cameras'] and len(config['cameras']) > 0:
-                l1_test = 0.0
-                psnr_test = 0.0
+                split_rows = []
                 for idx, viewpoint in enumerate(config['cameras']):
-                    image = torch.clamp(renderer.render(viewpoint, scene.gaussians)["rgb"], 0.0, 1.0)
+                    render_pkg = renderer.render(viewpoint, scene.gaussians)
+                    image = torch.clamp(render_pkg["rgb"], 0.0, 1.0)
                     gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
                     if tb_writer and (idx < 5):
                         tb_writer.add_images(config['name'] + "_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
@@ -1101,15 +1268,34 @@ def training_report(tb_writer, iteration, scalar_stats, tensor_stats, testing_it
                         mask = viewpoint.original_mask.cuda().bool()
                     else:
                         mask = torch.ones_like(gt_image[0]).bool()
-                    l1_test += l1_loss(image, gt_image, mask).mean().double()
-                    psnr_test += psnr(image, gt_image, mask).mean().double()
+                    row = _eval_metric_row(iteration, config["name"], idx, viewpoint, render_pkg, image, gt_image, mask)
+                    split_rows.append(row)
+                    per_view_rows.append(row)
+                    if current_viewpoint is not None:
+                        _restore_training_render_state(scene.gaussians, current_viewpoint)
 
-                psnr_test /= len(config['cameras'])
-                l1_test /= len(config['cameras'])
-                print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
+                l1_values = np.array([row["l1"] for row in split_rows if np.isfinite(row["l1"])], dtype=np.float64)
+                psnr_values = np.array([row["psnr"] for row in split_rows if np.isfinite(row["psnr"])], dtype=np.float64)
+                l1_test = float(np.mean(l1_values)) if l1_values.size else float("nan")
+                psnr_test = float(np.mean(psnr_values)) if psnr_values.size else float("nan")
+                psnr_median = float(np.median(psnr_values)) if psnr_values.size else float("nan")
+                low_rows = [row for row in split_rows if np.isfinite(row["psnr"]) and row["psnr"] < 10.0]
+                print(
+                    "\n[ITER {}] Evaluating {}: L1 {} PSNR {} "
+                    "median_psnr {} outliers {}".format(
+                        iteration, config['name'], l1_test, psnr_test, psnr_median, len(low_rows)
+                    )
+                )
                 if tb_writer:
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
+                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr_median', psnr_median, iteration)
+
+        metrics_dir = os.path.join(cfg.model_path, "metrics")
+        _write_eval_csv(os.path.join(metrics_dir, f"eval_iter_{iteration:06d}_per_view.csv"), per_view_rows)
+        _append_eval_summary(os.path.join(metrics_dir, "eval_summary.csv"), per_view_rows, scalar_stats)
+        if current_viewpoint is not None:
+            _restore_training_render_state(scene.gaussians, current_viewpoint)
 
         #if tb_writer:
             #tb_writer.add_histogram("test/opacity_histogram", scene.gaussians.get_opacity, iteration)
