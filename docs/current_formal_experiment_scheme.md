@@ -17,10 +17,19 @@ not be used as the main autonomous-driving street-scene results.
 | --- | --- | --- | --- | --- | --- |
 | A | `configs/experiments/a100_baseline_streetgs.yaml` | on | StreetGS-style COLMAP + LiDAR/object init | yes, `lambda_depth_lidar=0.1` | Original StreetGS baseline reproduction |
 | B | `configs/experiments/a100_da3_only.yaml` | on | StreetGS-style COLMAP + LiDAR/object init | no | DA3-only unsupervised structure signal under the original full-scene initialization |
-| C | `configs/experiments/a100_da3_periodic_group_softpatch.yaml` | on | StreetGS-style COLMAP + LiDAR/object init | no | DA3 + periodic group softpatch feedback under the original full-scene initialization |
+| C | blocked until implemented | on | COLMAP-only, no LiDAR init | no | Strict no-LiDAR-init DA3-only full-scene test; requires non-LiDAR object initialization |
+| D | `configs/experiments/a100_da3_periodic_group_softpatch.yaml` | on | StreetGS-style COLMAP + LiDAR/object init | no | Main DA3 + periodic group softpatch feedback with vehicles retained |
+| E | blocked until implemented | on | COLMAP-only, no LiDAR init | no | Main DA3 + feedback strict no-LiDAR-init full-scene test; requires non-LiDAR object initialization |
 
-Use A as the baseline. Compare B/C against A to decide whether the method can
-replace LiDAR training supervision while preserving vehicles.
+Use A as the baseline. Compare B/D against A to decide whether the method can
+replace LiDAR training supervision while preserving vehicles under the original
+StreetGS initialization protocol.
+
+C/E are valid scientific questions, but they are not currently valid full-scene
+configs in this codebase: the existing strict no-LiDAR initialization path is
+COLMAP background-only and disables object Gaussians. Because all formal groups
+must retain vehicles, C/E need a new non-LiDAR object initialization path before
+they can be run as final full-scene experiments.
 
 ## Optional strict no-LiDAR-initialization ablation
 
@@ -61,6 +70,7 @@ Build paper evidence after training:
 ```bash
 python scripts/build_paper_evidence_pack.py --output-root outputs/a100_main_experiments --paper-dir outputs/paper_evidence
 python scripts/build_paper_result_visuals.py --paper-dir outputs/paper_evidence --out-dir outputs/paper_results
+python scripts/build_paper_training_gallery.py --output-root outputs/a100_main_experiments --out-dir outputs/paper_results/training_gallery --copy-assets
 ```
 
 ## Paper framing decision

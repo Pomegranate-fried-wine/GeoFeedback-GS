@@ -13,6 +13,7 @@ Official migration-safe entrypoints:
 - `collect_experiment_outputs.py`: collect compact output manifests.
 - `build_paper_evidence_pack.py`: collect metrics, manifests, safety audits, repair summaries, and figure assets into `outputs/paper_evidence/` for paper writing.
 - `build_paper_result_visuals.py`: render paper-facing tables, plots, LaTeX table drafts, and selected figures from `outputs/paper_evidence/`.
+- `build_paper_training_gallery.py`: organize every-500-iteration fixed-view RGB/depth comparison panels across experiment groups.
 - `evaluate.py` / `evaluate_geometry_metrics.py`: evaluation launchers.
 - `render_periodic_panels.py`: periodic panel helper.
 - `test_depth_visualization.py`: smoke-test robust depth visualization on empty/invalid depth maps.

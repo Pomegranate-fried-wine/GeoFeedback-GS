@@ -147,8 +147,26 @@ outputs/paper_results/
     initialization_audit.png
   figures/
     selected_panels/
+  training_gallery/
+    index.html
+    training_gallery_index.csv
+    training_gallery_missing.csv
+    training_gallery_manifest.json
 ```
 
 The result renderer does not fabricate missing metrics. If source CSV files are
 missing, the corresponding table or plot is empty or marked skipped in
 `paper_result_manifest.json`.
+
+For fixed-view cross-group visual comparison after training, run:
+
+```bash
+python scripts/build_paper_training_gallery.py \
+  --output-root outputs/a100_main_experiments \
+  --out-dir outputs/paper_results/training_gallery \
+  --copy-assets
+```
+
+This indexes and copies the every-500-iteration `periodic_eval` panels by
+`iteration + cam_id + image_name`, so the same selected frame/view can be
+compared directly across experiment groups.
