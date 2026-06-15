@@ -1,16 +1,16 @@
 _BASE_: ../base/geoguardgs_base.yaml
-exp_name: a100_da3_only
-model_path: outputs/a100_main_experiments/da3_only_full_scene_lidar_init
+exp_name: a100_static_bg_da3_only_no_lidar_init
+model_path: outputs/a100_main_experiments/static_bg_da3_only_no_lidar_init
 data:
   use_colmap: true
   filter_colmap: true
-  allow_lidar_initialization: true
-  require_no_lidar_initialization: false
-  initialization_note: streetgs_colmap_lidar_object_initialization_no_lidar_training
+  allow_lidar_initialization: false
+  require_no_lidar_initialization: true
+  initialization_note: colmap_image_only_background_initialization
 model:
   nsg:
-    include_obj: true
-    include_sky: true
+    include_obj: false
+    include_sky: false
 geovit:
   enabled: true
 train:

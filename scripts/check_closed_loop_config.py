@@ -72,6 +72,8 @@ def main():
     allow_lidar_init = bool(get(cfg, "data.allow_lidar_initialization", True))
     use_colmap = bool(get(cfg, "data.use_colmap", False))
     filter_colmap = bool(get(cfg, "data.filter_colmap", False))
+    include_obj = bool(get(cfg, "model.nsg.include_obj", True))
+    exp_name = str(get(cfg, "exp_name", ""))
 
     if supervision == "da3_unsupervised":
         checks.append(("da3_no_lidar_loss", not uses_lidar and lambda_lidar == 0.0))
@@ -90,6 +92,8 @@ def main():
         checks.append(("no_lidar_init_uses_colmap", use_colmap))
         checks.append(("no_lidar_init_filters_colmap", filter_colmap))
         checks.append(("no_lidar_init_disables_lidar_pointcloud", not allow_lidar_init))
+    if "static_bg" not in exp_name:
+        checks.append(("full_scene_configs_keep_objects", include_obj))
 
     failed = [name for name, ok in checks if not ok]
     payload = {
@@ -110,6 +114,7 @@ def main():
             "filter_colmap": filter_colmap,
             "allow_lidar_initialization": allow_lidar_init,
             "require_no_lidar_initialization": require_no_lidar_init,
+            "include_obj": include_obj,
         },
     }
     if "lambda_sky_scale_covers_cameras" in failed:
@@ -125,6 +130,12 @@ def main():
             "No-LiDAR initialization configs must use COLMAP/SfM pointclouds only: "
             "set data.use_colmap=true, data.filter_colmap=true, "
             "data.allow_lidar_initialization=false, and data.require_no_lidar_initialization=true."
+        )
+    if "full_scene_configs_keep_objects" in failed:
+        payload["error"] = (
+            "Full-scene experiment configs must keep vehicles: set "
+            "model.nsg.include_obj=true. Only configs explicitly named with "
+            "'static_bg' may disable the object branch."
         )
     print(json.dumps(payload, indent=2, ensure_ascii=False))
     if args.json_out:

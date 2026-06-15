@@ -1,0 +1,26 @@
+_BASE_: ../base/geoguardgs_base.yaml
+exp_name: a100_static_bg_baseline_no_lidar_init
+model_path: outputs/a100_main_experiments/static_bg_baseline_no_lidar_init
+data:
+  use_colmap: true
+  filter_colmap: true
+  allow_lidar_initialization: false
+  require_no_lidar_initialization: true
+  initialization_note: colmap_image_only_background_initialization
+model:
+  nsg:
+    include_obj: false
+    include_sky: false
+train:
+  guided_feedback:
+    enabled: false
+    use_lidar_depth: false
+    use_da3_structure: false
+  feedback_controller:
+    enabled: false
+    mode: "off"
+  gaussian_control:
+    enabled: false
+    control_mode: "off"
+optim:
+  lambda_depth_lidar: 0.0
