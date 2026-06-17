@@ -368,7 +368,7 @@ Training and evaluation scripts produce several complementary output types:
 - `metrics/train_loss_trace.csv` and `metrics/train_loss_trace.jsonl`: per-iteration loss, training PSNR, guided feedback, DA3, and control scalars.
 - `metrics/eval_summary_full.csv`: full train/test evaluation summary every 5000 iterations.
 - `periodic_eval/`: fixed-view RGB/depth diagnostic panels during training. At iterations `1000, 3000, 5000, 10000, 15000, 20000, 25000, 30000`, it switches to train+test all-view snapshots and writes `snapshot_manifest.json`.
-- `feedback_controller/`: risk, contribution, responsible group, softpatch signal, and audit manifests.
+- `feedback_controller/`: risk, contribution, responsible group, softpatch signal, and audit manifests. C/PV-C also write original-resolution overlays under `feedback_controller/iter_XXXXXX/visual_overlays/`, including RGB/depth images with red risk regions and cyan responsible-group annotations.
 - `final_evaluation_test_only_v2/`: paper-grade held-out RGB/object/background metrics.
 - `geometry_eval_test_only_v1/`: held-out geometry consistency metrics and panels.
 - `paper_evidence_geofeedback_gs/`: compact tables and figures for paper/PPT writing.

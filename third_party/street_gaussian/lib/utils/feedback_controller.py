@@ -7,6 +7,13 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+
 from lib.utils.feedback_pipeline_stages import (
     build_da3_boundary_risk_stage,
     build_lidar_error_risk_stage,
@@ -168,6 +175,7 @@ class PeriodicFeedbackController:
         risk_summary = {}
         contribution_stage = {}
         group_summary = {}
+        overlay_summary = {}
         t0 = time.perf_counter()
 
         try:
@@ -185,6 +193,13 @@ class PeriodicFeedbackController:
             group_summary = self.select_responsible_groups(contribution_out, trigger_dir)
             feedback_stage = self.build_feedback_signal(contribution_out, group_summary, trigger_dir)
             feedback_signal_path = feedback_stage.get("path", feedback_stage if isinstance(feedback_stage, str) else "")
+            overlay_summary = self.write_feedback_visual_overlays(
+                trigger_dir,
+                rendered_outputs,
+                risk_summary,
+                group_summary,
+                feedback_signal_path,
+            )
             if self.mode in {"feedback_update", "repair_dryrun"}:
                 self.update_active_feedback(feedback_signal_path)
                 active_summary = self._write_active_feedback_summary(trigger_dir)
@@ -252,6 +267,7 @@ class PeriodicFeedbackController:
             "recompute_contribution": self.recompute_contribution,
             "recompute_responsible_groups": self.recompute_responsible_groups,
             "recompute_softpatch": self.recompute_softpatch,
+            "visual_overlay_summary": overlay_summary,
             "status": status,
             "errors": errors,
             "runtime_sec": float(time.perf_counter() - t0),
@@ -426,6 +442,162 @@ class PeriodicFeedbackController:
                 "note": "empty feedback signal because no signal_path was available",
             })
         return {"status": "valid", "path": out_path, "feedback_mode": self.feedback_mode}
+
+    def write_feedback_visual_overlays(self, trigger_dir, rendered_outputs, risk_summary, group_summary, feedback_signal_path):
+        overlay_dir = os.path.join(trigger_dir, "visual_overlays")
+        summary = {
+            "status": "skipped",
+            "reason": "",
+            "output_dir": overlay_dir,
+            "paths": {},
+            "view_id": risk_summary.get("view_id", "") if isinstance(risk_summary, dict) else "",
+            "selected_pixel_count": int(risk_summary.get("selected_pixels_count", 0)) if isinstance(risk_summary, dict) else 0,
+            "responsible_group_count": 0,
+        }
+        if cv2 is None:
+            summary["reason"] = "cv2 is not available"
+            return summary
+        rgb = self._tensor_to_rgb_u8(rendered_outputs.get("rgb") if isinstance(rendered_outputs, dict) else None)
+        depth_vis = self._depth_to_rgb_u8(rendered_outputs.get("depth") if isinstance(rendered_outputs, dict) else None)
+        if rgb is None and depth_vis is None:
+            summary["reason"] = "missing current rendered rgb/depth"
+            return summary
+        base = rgb if rgb is not None else depth_vis
+        h, w = base.shape[:2]
+        if rgb is None:
+            rgb = np.zeros((h, w, 3), dtype=np.uint8)
+        if depth_vis is None:
+            depth_vis = np.zeros((h, w, 3), dtype=np.uint8)
+
+        selected = self._load_selected_pixels(risk_summary)
+        groups = self._load_responsible_groups(trigger_dir)
+        summary["responsible_group_count"] = len(groups)
+        risk_mask = np.zeros((h, w), dtype=np.uint8)
+        bbox = None
+        if selected.size:
+            xs = np.clip(selected[:, 0].astype(np.int64), 0, w - 1)
+            ys = np.clip(selected[:, 1].astype(np.int64), 0, h - 1)
+            risk_mask[ys, xs] = 255
+            risk_mask = cv2.dilate(risk_mask, np.ones((5, 5), dtype=np.uint8), iterations=1)
+            bbox = [int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1]
+
+        rgb_risk = self._overlay_mask(rgb, risk_mask, (255, 48, 48), alpha=0.55)
+        depth_risk = self._overlay_mask(depth_vis, risk_mask, (255, 48, 48), alpha=0.55)
+        rgb_group = rgb.copy()
+        depth_group = depth_vis.copy()
+        combined = rgb_risk.copy()
+        self._draw_responsible_group_annotation(rgb_group, bbox, groups)
+        self._draw_responsible_group_annotation(depth_group, bbox, groups)
+        self._draw_responsible_group_annotation(combined, bbox, groups)
+        self._draw_overlay_header(rgb_risk, "risk regions from selected pixels")
+        self._draw_overlay_header(depth_risk, "risk regions from selected pixels")
+        self._draw_overlay_header(rgb_group, "responsible Gaussian groups")
+        self._draw_overlay_header(depth_group, "responsible Gaussian groups")
+        self._draw_overlay_header(combined, "risk regions + responsible Gaussian groups")
+
+        view_id = str(summary["view_id"] or "view").replace(os.sep, "_")
+        os.makedirs(overlay_dir, exist_ok=True)
+        outputs = {
+            "rgb_risk_regions": os.path.join(overlay_dir, f"{view_id}_rgb_risk_regions.jpg"),
+            "depth_risk_regions": os.path.join(overlay_dir, f"{view_id}_depth_risk_regions.jpg"),
+            "rgb_responsible_groups": os.path.join(overlay_dir, f"{view_id}_rgb_responsible_groups.jpg"),
+            "depth_responsible_groups": os.path.join(overlay_dir, f"{view_id}_depth_responsible_groups.jpg"),
+            "rgb_risk_and_responsible_groups": os.path.join(overlay_dir, f"{view_id}_rgb_risk_and_responsible_groups.jpg"),
+        }
+        cv2.imwrite(outputs["rgb_risk_regions"], rgb_risk[..., ::-1])
+        cv2.imwrite(outputs["depth_risk_regions"], depth_risk[..., ::-1])
+        cv2.imwrite(outputs["rgb_responsible_groups"], rgb_group[..., ::-1])
+        cv2.imwrite(outputs["depth_responsible_groups"], depth_group[..., ::-1])
+        cv2.imwrite(outputs["rgb_risk_and_responsible_groups"], combined[..., ::-1])
+        summary.update({
+            "status": "valid",
+            "reason": "",
+            "paths": outputs,
+            "feedback_signal_path": feedback_signal_path,
+            "note": "Red marks selected risk pixels/region. Cyan boxes/text identify the final responsible Gaussian groups attached to this risk region; empty groups are explicitly marked.",
+        })
+        _json_write(os.path.join(overlay_dir, "visual_overlay_manifest.json"), summary)
+        return summary
+
+    def _tensor_to_rgb_u8(self, value):
+        if value is None or not hasattr(value, "detach"):
+            return None
+        arr = value.detach().float().cpu().numpy()
+        arr = np.squeeze(arr)
+        if arr.ndim == 3 and arr.shape[0] in {1, 3, 4}:
+            arr = np.moveaxis(arr[:3], 0, -1)
+        if arr.ndim == 2:
+            arr = np.repeat(arr[..., None], 3, axis=2)
+        if arr.ndim != 3:
+            return None
+        return (np.clip(arr[..., :3], 0.0, 1.0) * 255).astype(np.uint8)
+
+    def _depth_to_rgb_u8(self, value):
+        if value is None or not hasattr(value, "detach"):
+            return None
+        depth = np.squeeze(value.detach().float().cpu().numpy()).astype(np.float32)
+        finite = np.isfinite(depth) & (depth > 0)
+        out = np.zeros(depth.shape, dtype=np.uint8)
+        if np.any(finite):
+            lo, hi = np.percentile(depth[finite], [5, 95])
+            norm = np.clip((depth - lo) / max(float(hi - lo), 1e-6), 0, 1)
+            out = (norm * 255).astype(np.uint8)
+        return cv2.applyColorMap(out, cv2.COLORMAP_TURBO)[..., ::-1]
+
+    def _overlay_mask(self, image, mask, color, alpha=0.5):
+        out = image.copy()
+        active = mask > 0
+        if np.any(active):
+            color_arr = np.asarray(color, dtype=np.float32)
+            out[active] = np.clip((1.0 - alpha) * out[active].astype(np.float32) + alpha * color_arr, 0, 255).astype(np.uint8)
+        return out
+
+    def _load_selected_pixels(self, risk_summary):
+        if not isinstance(risk_summary, dict):
+            return np.zeros((0, 2), dtype=np.int64)
+        path = risk_summary.get("selected_pixels_path", "")
+        if not path or not os.path.exists(path):
+            return np.zeros((0, 2), dtype=np.int64)
+        try:
+            arr = np.asarray(np.load(path), dtype=np.int64).reshape(-1, 2)
+            return arr
+        except Exception:
+            return np.zeros((0, 2), dtype=np.int64)
+
+    def _load_responsible_groups(self, trigger_dir):
+        path = os.path.join(trigger_dir, "responsible_group_stage", "da3_boundary_responsible_groups.json")
+        if not os.path.exists(path):
+            return []
+        try:
+            payload = read_json(path)
+        except Exception:
+            return []
+        return payload if isinstance(payload, list) else []
+
+    def _draw_overlay_header(self, image, text):
+        cv2.rectangle(image, (0, 0), (image.shape[1], 28), (0, 0, 0), -1)
+        cv2.putText(image, text, (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+
+    def _draw_responsible_group_annotation(self, image, bbox, groups):
+        h, w = image.shape[:2]
+        if bbox is not None:
+            x0, y0, x1, y1 = bbox
+            x0, y0 = max(0, x0), max(30, y0)
+            x1, y1 = min(w - 1, x1), min(h - 1, y1)
+            cv2.rectangle(image, (x0, y0), (x1, y1), (32, 220, 255), 2)
+            text_x, text_y = x0, min(h - 8, y1 + 22)
+        else:
+            text_x, text_y = 8, 54
+        if not groups:
+            cv2.putText(image, "no responsible group selected", (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (32, 220, 255), 2, cv2.LINE_AA)
+            return
+        for idx, group in enumerate(groups[:5]):
+            label = str(group.get("group_label", "group"))
+            score = group.get("group_risk_weighted_contribution", 0.0)
+            member_count = group.get("member_count", len(group.get("stable_gaussian_ids", [])))
+            text = f"g{group.get('group_id', idx)} {label} n={member_count} s={float(score):.2f}"
+            y = min(h - 8, text_y + idx * 22)
+            cv2.putText(image, text[:96], (text_x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (32, 220, 255), 2, cv2.LINE_AA)
 
     def update_active_feedback(self, feedback_signal):
         self.active_feedback = {
