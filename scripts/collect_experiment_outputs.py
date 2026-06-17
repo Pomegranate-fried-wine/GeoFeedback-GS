@@ -8,8 +8,8 @@ from pathlib import Path
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output-root", default="outputs/a100_main_experiments")
-    parser.add_argument("--out", default="outputs/a100_main_experiments/collected_summary.json")
+    parser.add_argument("--output-root", default="outputs")
+    parser.add_argument("--out", default="outputs/collected_summary.json")
     args = parser.parse_args()
     root = Path(args.output_root)
     rows = []

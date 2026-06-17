@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Recover training and evaluation curves from saved StreetGS tqdm logs.
 
 The real scalar trace is ``metrics/train_loss_trace.csv``.  When that file was
@@ -21,7 +21,7 @@ DEFAULT_OUT = ROOT / "outputs" / "recovered_training_curves_from_logs"
 
 LOG_SPECS = {
     "main_A_lidar_init_lidar_sup_gpu4.log": ("A StreetGS", "a100_baseline_streetgs"),
-    "main_B_lidar_init_da3_only_nolidar_sup_gpu5.log": ("B No-LiDAR-Supervision Control", "a100_da3_only"),
+    "main_B_lidar_init_no_lidar_supervision_control_nolidar_sup_gpu5.log": ("B No-LiDAR-Supervision Control", "a100_no_lidar_supervision_control"),
     "main_C_lidar_init_da3_feedback_nolidar_sup_gpu6.log": (
         "C DA3+Feedback",
         "a100_da3_periodic_group_softpatch",
@@ -276,3 +276,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

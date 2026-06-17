@@ -1,4 +1,4 @@
-# GeoFeedback-GS A100 正式实验指导说明
+﻿# GeoFeedback-GS A100 正式实验指导说明
 
 本文档用于把 `GitHub_main` 迁移到 A100 Linux 服务器后，完成环境安装、数据/权重放置、CUDA 扩展编译、配置安全检查、并行训练、每 500 轮输出和结果收集。
 
@@ -143,7 +143,7 @@ train:
 | 组别 | 配置 | 作用 |
 | --- | --- | --- |
 | A | `a100_baseline_streetgs.yaml` | 原始 StreetGS baseline |
-| B | `a100_da3_only.yaml` | No-LiDAR-Supervision Control，不启用 periodic controller；当前 global mode 不应过度表述为严格 DA3-only |
+| B | `a100_no_lidar_supervision_control.yaml` | No-LiDAR-Supervision Control，不启用 periodic controller；当前 global mode 不应过度表述为严格 DA3-only |
 | C | `a100_da3_periodic_group_softpatch.yaml` | DA3 主方法：周期性 group softpatch |
 | D | `a100_da3_periodic_group_softpatch_opacity_reg.yaml` | C + opacity regularization loss |
 | E | `a100_da3_periodic_group_softpatch_opacity_decay.yaml` | C + conservative opacity decay |
@@ -235,7 +235,7 @@ train:
 每个实验应输出到：
 
 ```text
-outputs/a100_main_experiments/<experiment_name>/feedback_controller/iter_XXXXXX/
+outputs/<group_output_dir>/feedback_controller/iter_XXXXXX/
 ```
 
 至少包含：
@@ -371,13 +371,13 @@ cd /data/projects/GeoGuardGS
 python scripts/launch_a100_experiments.py \
   --configs \
     configs/experiments/a100_baseline_streetgs.yaml \
-    configs/experiments/a100_da3_only.yaml \
+    configs/experiments/a100_no_lidar_supervision_control.yaml \
     configs/experiments/a100_da3_periodic_group_softpatch.yaml \
     configs/experiments/a100_da3_periodic_group_softpatch_opacity_reg.yaml \
     configs/experiments/a100_da3_periodic_group_softpatch_opacity_decay.yaml \
     configs/experiments/a100_lidar_supervised_reference.yaml \
   --gpus 0,1,2,3 \
-  --output-root outputs/a100_main_experiments \
+  --output-root outputs \
   --dry-run
 ```
 
@@ -387,13 +387,13 @@ python scripts/launch_a100_experiments.py \
 python scripts/launch_a100_experiments.py \
   --configs \
     configs/experiments/a100_baseline_streetgs.yaml \
-    configs/experiments/a100_da3_only.yaml \
+    configs/experiments/a100_no_lidar_supervision_control.yaml \
     configs/experiments/a100_da3_periodic_group_softpatch.yaml \
     configs/experiments/a100_da3_periodic_group_softpatch_opacity_reg.yaml \
     configs/experiments/a100_da3_periodic_group_softpatch_opacity_decay.yaml \
     configs/experiments/a100_lidar_supervised_reference.yaml \
   --gpus 0,1,2,3 \
-  --output-root outputs/a100_main_experiments
+  --output-root outputs
 ```
 
 `scripts/train.py` 是 wrapper，会进入 `third_party/street_gaussian/train.py`，并把 `GitHub_main` 和 `third_party/street_gaussian` 加入 `PYTHONPATH`。
@@ -420,11 +420,11 @@ python scripts/launch_a100_experiments.py \
 
 ```bash
 python scripts/check_closed_loop_config.py --config configs/smoke/a100_baseline_streetgs_smoke.yaml
-python scripts/check_closed_loop_config.py --config configs/smoke/a100_da3_only_smoke.yaml
+python scripts/check_closed_loop_config.py --config configs/smoke/a100_no_lidar_supervision_control_smoke.yaml
 python scripts/check_closed_loop_config.py --config configs/smoke/a100_da3_periodic_group_softpatch_smoke.yaml
 python scripts/check_closed_loop_config.py --config configs/smoke/a100_da3_periodic_group_softpatch_opacity_reg_smoke.yaml
 python scripts/check_closed_loop_config.py --config configs/smoke/a100_da3_periodic_group_softpatch_opacity_decay_smoke.yaml
-python scripts/validate_no_lidar_leakage.py configs/smoke/a100_da3_only_smoke.yaml
+python scripts/validate_no_lidar_leakage.py configs/smoke/a100_no_lidar_supervision_control_smoke.yaml
 python scripts/validate_no_lidar_leakage.py configs/smoke/a100_da3_periodic_group_softpatch_smoke.yaml
 ```
 
@@ -432,7 +432,7 @@ python scripts/validate_no_lidar_leakage.py configs/smoke/a100_da3_periodic_grou
 
 ```bash
 python scripts/train.py --config configs/smoke/a100_baseline_streetgs_smoke.yaml
-python scripts/train.py --config configs/smoke/a100_da3_only_smoke.yaml
+python scripts/train.py --config configs/smoke/a100_no_lidar_supervision_control_smoke.yaml
 python scripts/train.py --config configs/smoke/a100_da3_periodic_group_softpatch_smoke.yaml
 python scripts/train.py --config configs/smoke/a100_da3_periodic_group_softpatch_opacity_reg_smoke.yaml
 python scripts/train.py --config configs/smoke/a100_da3_periodic_group_softpatch_opacity_decay_smoke.yaml
@@ -465,7 +465,7 @@ diagnostic comparison:
 python scripts/launch_a100_experiments.py \
   --configs \
     configs/short_5000/a100_baseline_streetgs_5000.yaml \
-    configs/short_5000/a100_da3_only_5000.yaml \
+    configs/short_5000/a100_no_lidar_supervision_control_5000.yaml \
     configs/short_5000/a100_da3_periodic_group_softpatch_5000.yaml \
   --gpus 0,1,2 \
   --output-root outputs/a100_short_5000
@@ -502,14 +502,14 @@ python scripts/launch_a100_experiments.py \
 python scripts/launch_a100_experiments.py \
   --configs \
     configs/experiments/a100_baseline_streetgs.yaml \
-    configs/experiments/a100_da3_only.yaml \
+    configs/experiments/a100_no_lidar_supervision_control.yaml \
     configs/experiments/a100_da3_periodic_group_softpatch.yaml \
     configs/experiments/a100_da3_periodic_group_softpatch_opacity_reg.yaml \
     configs/experiments/a100_da3_periodic_group_softpatch_opacity_decay.yaml \
     configs/experiments/a100_lidar_supervised_reference.yaml \
     configs/experiments/a100_hybrid_reference.yaml \
   --gpus 0,1,2,3 \
-  --output-root outputs/a100_main_experiments
+  --output-root outputs
 ```
 
 正式配置默认：
@@ -529,8 +529,8 @@ python scripts/launch_a100_experiments.py \
 
 ```bash
 python scripts/collect_experiment_outputs.py \
-  --output-root outputs/a100_main_experiments \
-  --out outputs/a100_main_experiments/collected_summary.json
+  --output-root outputs \
+  --out outputs/collected_summary.json
 ```
 
 需要重点查看：
@@ -549,7 +549,7 @@ python scripts/collect_experiment_outputs.py \
 
 ```bash
 python scripts/build_paper_evidence_pack.py \
-  --output-root outputs/a100_main_experiments \
+  --output-root outputs \
   --paper-dir outputs/paper_evidence
 ```
 
@@ -758,3 +758,5 @@ outputs/a100_colmap_debug/
 
 Do not replace the current no-COLMAP A/B/C short_5000 runs until the COLMAP
 smoke has passed data loading and initialization on the server.
+
+

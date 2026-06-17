@@ -1,4 +1,4 @@
-# GeoFeedback-GS scripts
+﻿# GeoFeedback-GS scripts
 
 Official migration-safe entrypoints:
 
@@ -23,3 +23,4 @@ Official migration-safe entrypoints:
 Historical local research scripts are kept in `scripts/research_archive/` and
 may contain local defaults such as A5000 or p15 paths. They are not official
 A100 entrypoints.
+

@@ -47,6 +47,8 @@ DA3 is not treated as metric depth ground truth. The training signal is a relati
 
 The feedback loss is not an independent new loss. In the implemented training path, feedback creates a region/pixel weight map. The selected softpatch regions receive weights greater than one, and these weights activate/modulate the DA3 structure loss.
 
+Periodic feedback is stateful between controller triggers. When a trigger writes a new `feedback_signal.json`, training calls `guided_feedback.update_signal_path(...)`; subsequent iterations keep using that loaded signal until the next trigger replaces it.
+
 ## Method Pipeline
 
 The main training path is:
@@ -90,7 +92,7 @@ The formal experiments are configured under `configs/experiments/`:
 
 ```text
 configs/experiments/a100_baseline_streetgs.yaml
-configs/experiments/a100_da3_only.yaml
+configs/experiments/a100_no_lidar_supervision_control.yaml
 configs/experiments/a100_da3_periodic_group_softpatch.yaml
 configs/experiments/a100_pv_da3_feedback_obj.yaml
 ```
@@ -98,11 +100,22 @@ configs/experiments/a100_pv_da3_feedback_obj.yaml
 The current recommended interpretation is:
 
 - **A** is the LiDAR-supervised StreetGS reference.
-- **B** removes training-time LiDAR supervision while retaining LiDAR initialization; do not overstate it as a fully active DA3-only method unless training logs confirm active DA3 loss.
+- **B** removes training-time LiDAR supervision while retaining LiDAR initialization; it is not the old DA3-only setting.
 - **C** uses LiDAR initialization, no LiDAR training supervision, and feedback-activated DA3 relative-structure loss.
 - **PV-C** uses COLMAP background initialization, random-box object initialization, no LiDAR initialization, no LiDAR training supervision, and feedback-activated DA3 relative-structure loss.
 
 PV-C should be described as **LiDAR-free under pose-and-box supervision**, not as fully unconstrained monocular reconstruction. It still uses camera poses, COLMAP/SfM background points, and object track boxes.
+
+The four official training output roots are fixed by each config:
+
+```text
+outputs/A_streetgs_lidar_init_lidar_sup/
+outputs/B_lidar_init_no_lidar_sup/
+outputs/C_lidar_init_da3_feedback/
+outputs/PVC_no_lidar_init_da3_feedback/
+```
+
+All model checkpoints, saved Gaussians, RGB/depth snapshots, metrics, logs, and feedback-controller artifacts for a group are written under that group's directory.
 
 ## Installation
 
@@ -172,21 +185,21 @@ CUDA_VISIBLE_DEVICES=4 python scripts/train.py \
 Output:
 
 ```text
-outputs/a100_main_experiments/baseline_streetgs/
+outputs/A_streetgs_lidar_init_lidar_sup/
 ```
 
 ### B: No-LiDAR-Supervision Control
 
 ```bash
 CUDA_VISIBLE_DEVICES=5 python scripts/train.py \
-  --config configs/experiments/a100_da3_only.yaml \
+  --config configs/experiments/a100_no_lidar_supervision_control.yaml \
   2>&1 | tee logs/B_no_lidar_supervision_control.log
 ```
 
 Output:
 
 ```text
-outputs/a100_main_experiments/da3_only/
+outputs/B_lidar_init_no_lidar_sup/
 ```
 
 ### C: LiDAR-init GeoFeedback-GS
@@ -200,7 +213,7 @@ CUDA_VISIBLE_DEVICES=6 python scripts/train.py \
 Output:
 
 ```text
-outputs/a100_main_experiments/da3_periodic_group_softpatch/
+outputs/C_lidar_init_da3_feedback/
 ```
 
 ### PV-C: LiDAR-free GeoFeedback-GS
@@ -214,16 +227,17 @@ CUDA_VISIBLE_DEVICES=7 python scripts/train.py \
 Output:
 
 ```text
-outputs/a100_main_experiments/pv_da3_feedback_obj/
+outputs/PVC_no_lidar_init_da3_feedback/
 ```
 
 Before long runs, validate configs:
 
 ```bash
 python scripts/check_closed_loop_config.py --config configs/experiments/a100_baseline_streetgs.yaml
-python scripts/check_closed_loop_config.py --config configs/experiments/a100_da3_only.yaml
+python scripts/check_closed_loop_config.py --config configs/experiments/a100_no_lidar_supervision_control.yaml
 python scripts/check_closed_loop_config.py --config configs/experiments/a100_da3_periodic_group_softpatch.yaml
 python scripts/check_closed_loop_config.py --config configs/experiments/a100_pv_da3_feedback_obj.yaml
+python scripts/verify_four_group_configs.py
 ```
 
 ## Evaluation Commands
@@ -236,7 +250,7 @@ Use the held-out test split as the main paper table source:
 CUDA_VISIBLE_DEVICES=0 python scripts/final_evaluate_experiments.py \
   --configs \
     configs/experiments/a100_baseline_streetgs.yaml \
-    configs/experiments/a100_da3_only.yaml \
+    configs/experiments/a100_no_lidar_supervision_control.yaml \
     configs/experiments/a100_da3_periodic_group_softpatch.yaml \
     configs/experiments/a100_pv_da3_feedback_obj.yaml \
   --output-root outputs/final_evaluation_test_only_v2 \
@@ -266,7 +280,7 @@ This evaluation uses held-out LiDAR only as an evaluation reference. It should n
 CUDA_VISIBLE_DEVICES=0 python scripts/evaluate_geometry_consistency.py \
   --configs \
     configs/experiments/a100_baseline_streetgs.yaml \
-    configs/experiments/a100_da3_only.yaml \
+    configs/experiments/a100_no_lidar_supervision_control.yaml \
     configs/experiments/a100_da3_periodic_group_softpatch.yaml \
     configs/experiments/a100_pv_da3_feedback_obj.yaml \
   --output-root outputs/geometry_eval_test_only_v1 \
@@ -292,7 +306,7 @@ After final evaluation and geometry evaluation:
 
 ```bash
 python scripts/build_paper_evidence_pack.py \
-  --output-root outputs/a100_main_experiments \
+  --output-root outputs \
   --final-eval-root outputs/final_evaluation_test_only_v2 \
   --geometry-eval-root outputs/geometry_eval_test_only_v1 \
   --paper-dir outputs/paper_evidence_geofeedback_gs
@@ -351,7 +365,9 @@ Do not overstate the result:
 
 Training and evaluation scripts produce several complementary output types:
 
-- `periodic_eval/`: fixed-view RGB/depth diagnostic panels during training.
+- `metrics/train_loss_trace.csv` and `metrics/train_loss_trace.jsonl`: per-iteration loss, training PSNR, guided feedback, DA3, and control scalars.
+- `metrics/eval_summary_full.csv`: full train/test evaluation summary every 5000 iterations.
+- `periodic_eval/`: fixed-view RGB/depth diagnostic panels during training. At iterations `1000, 3000, 5000, 10000, 15000, 20000, 25000, 30000`, it switches to train+test all-view snapshots and writes `snapshot_manifest.json`.
 - `feedback_controller/`: risk, contribution, responsible group, softpatch signal, and audit manifests.
 - `final_evaluation_test_only_v2/`: paper-grade held-out RGB/object/background metrics.
 - `geometry_eval_test_only_v1/`: held-out geometry consistency metrics and panels.
@@ -362,7 +378,7 @@ Periodic panels are useful for debugging training dynamics. The main result tabl
 ## Limitations
 
 - Current formal evidence is based on a limited Waymo setting and should be expanded to more scenes.
-- B may not be a fully active DA3-only loss setting because of the current global-weight activation behavior.
+- B is the no-LiDAR-supervision control with LiDAR initialization; it should not be described as DA3-only.
 - PV-C avoids LiDAR initialization and LiDAR supervision, but still relies on camera poses, COLMAP/SfM, and object track boxes.
 - Feedback currently provides an auditable mechanism and local structure guidance; it should not be claimed as a universal final-metric improvement without additional ablations.
 - DA3 relative structure does not replace metric depth evaluation.

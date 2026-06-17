@@ -15,16 +15,44 @@ from datetime import datetime
 from pathlib import Path
 
 
+DEFAULT_FOUR_GROUP_CONFIGS = [
+    "configs/experiments/a100_baseline_streetgs.yaml",
+    "configs/experiments/a100_no_lidar_supervision_control.yaml",
+    "configs/experiments/a100_da3_periodic_group_softpatch.yaml",
+    "configs/experiments/a100_pv_da3_feedback_obj.yaml",
+]
+
+GROUP_LABELS = {
+    "a100_baseline_streetgs": "A",
+    "a100_no_lidar_supervision_control": "B",
+    "a100_da3_periodic_group_softpatch": "C",
+    "a100_pv_da3_feedback_obj": "PV-C",
+}
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--configs", nargs="+", required=True)
+    parser.add_argument(
+        "--configs",
+        nargs="+",
+        default=DEFAULT_FOUR_GROUP_CONFIGS,
+        help="Experiment configs. Defaults to the official A/B/C/PV-C four-group matrix.",
+    )
     parser.add_argument("--gpus", required=True, help="Comma-separated GPU ids, e.g. 0,1,2,3")
-    parser.add_argument("--output-root", default="outputs/a100_main_experiments")
+    parser.add_argument("--output-root", default="outputs")
     parser.add_argument("--train-entry", default="scripts/train.py")
     parser.add_argument("--extra-args", default="")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
+
+
+def read_config_model_path(cfg_path):
+    for line in Path(cfg_path).read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("model_path:"):
+            return stripped.split(":", 1)[1].strip().strip("\"'")
+    return ""
 
 
 def main():
@@ -41,7 +69,8 @@ def main():
         cfg_path = Path(cfg)
         exp_name = cfg_path.stem
         gpu = gpus[idx % len(gpus)]
-        exp_dir = root / exp_name
+        configured_model_path = read_config_model_path(cfg_path)
+        exp_dir = Path(configured_model_path) if configured_model_path else root / exp_name
         exp_dir.mkdir(parents=True, exist_ok=True)
         cmd = [sys.executable, args.train_entry, "--config", str(cfg_path)]
         if args.resume:
@@ -51,6 +80,7 @@ def main():
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = gpu
         record = {
+            "group": GROUP_LABELS.get(exp_name, ""),
             "experiment": exp_name,
             "config": str(cfg_path),
             "gpu": gpu,
@@ -60,7 +90,8 @@ def main():
             "dry_run": bool(args.dry_run),
         }
         runs.append(record)
-        print(f"[GeoGuardGS] GPU {gpu} CUDA_VISIBLE_DEVICES={gpu}: {' '.join(cmd)}")
+        group = f"{record['group']} " if record["group"] else ""
+        print(f"[GeoGuardGS] {group}GPU {gpu} CUDA_VISIBLE_DEVICES={gpu}: {' '.join(cmd)}")
         if not args.dry_run:
             log_path = exp_dir / "launch.log"
             log = open(log_path, "a", encoding="utf-8")

@@ -1,4 +1,4 @@
-# 实验计划
+﻿# 实验计划
 
 ## 主实验
 
@@ -23,3 +23,4 @@
 # Historical experiment-plan draft
 
 This file is retained as a historical planning note. The canonical current GeoFeedback-GS four-group scheme is in `README.md` and `docs/project_overview.md`.
+

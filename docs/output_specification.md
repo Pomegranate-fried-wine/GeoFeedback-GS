@@ -1,4 +1,4 @@
-# 输出规范
+﻿# 输出规范
 
 最终实验应能展示以下内容：
 
@@ -40,7 +40,7 @@ Formal full-scene v2 training should write fixed-view panels every 1000
 iterations:
 
 ```text
-outputs/a100_main_experiments/<exp_name>/
+outputs/<group_output_dir>/
   periodic_eval/
     iter_000500/
       panel_manifest.json
@@ -64,7 +64,7 @@ is written under:
 ```text
 outputs/a100_short_5000/
   baseline_streetgs/
-  da3_only/
+  no_lidar_supervision_control/
   da3_periodic_group_softpatch/
 ```
 
@@ -74,7 +74,7 @@ outputs/a100_short_5000/
 
 ```bash
 python scripts/build_paper_evidence_pack.py \
-  --output-root outputs/a100_main_experiments \
+  --output-root outputs \
   --paper-dir outputs/paper_evidence
 ```
 
@@ -163,7 +163,7 @@ For fixed-view cross-group visual comparison after training, run:
 
 ```bash
 python scripts/build_paper_training_gallery.py \
-  --output-root outputs/a100_main_experiments \
+  --output-root outputs \
   --out-dir outputs/paper_results/training_gallery \
   --copy-assets
 ```
@@ -178,7 +178,7 @@ Use the v2 output names for the next full-scene rerun:
 
 ```bash
 python scripts/build_paper_evidence_pack.py \
-  --output-root outputs/a100_main_experiments \
+  --output-root outputs \
   --paper-dir outputs/paper_evidence_full_scene_v2
 
 python scripts/build_paper_result_visuals.py \
@@ -186,7 +186,7 @@ python scripts/build_paper_result_visuals.py \
   --out-dir outputs/paper_results_full_scene_v2
 
 python scripts/build_paper_training_gallery.py \
-  --output-root outputs/a100_main_experiments \
+  --output-root outputs \
   --out-dir outputs/paper_results_full_scene_v2/training_gallery \
   --copy-assets
 ```
@@ -206,3 +206,5 @@ Required outputs:
 Training defaults now save 15 fixed views every 1000 iterations: 5 cameras x 3
 frames. Set `train.periodic_eval_view_ids` only when manually pinning exact
 image names.
+
+

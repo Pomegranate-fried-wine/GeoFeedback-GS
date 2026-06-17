@@ -1,21 +1,26 @@
 _BASE_: ../base/geoguardgs_base.yaml
-exp_name: a100_baseline_streetgs
-model_path: outputs/A_streetgs_lidar_init_lidar_sup
+exp_name: a100_no_lidar_supervision_control
+model_path: outputs/B_lidar_init_no_lidar_sup
 data:
   use_colmap: true
   filter_colmap: true
   allow_lidar_initialization: true
   require_no_lidar_initialization: false
-  initialization_note: streetgs_original_colmap_lidar_object_initialization
+  initialization_note: streetgs_colmap_lidar_object_initialization_no_lidar_training
 model:
   nsg:
     include_obj: true
     include_sky: true
+geovit:
+  enabled: false
 train:
   guided_feedback:
     enabled: false
-    use_lidar_depth: true
+    supervision_mode: da3_unsupervised
+    use_lidar_depth: false
     use_da3_structure: false
+    assert_no_lidar_supervision: true
+    feedback_mode: "none"
   feedback_controller:
     enabled: false
     mode: "off"
@@ -23,4 +28,4 @@ train:
     enabled: false
     control_mode: "off"
 optim:
-  lambda_depth_lidar: 0.1
+  lambda_depth_lidar: 0.0

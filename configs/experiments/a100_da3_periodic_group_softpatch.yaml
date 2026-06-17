@@ -1,6 +1,6 @@
 _BASE_: ../base/geoguardgs_base.yaml
 exp_name: a100_da3_periodic_group_softpatch
-model_path: outputs/a100_main_experiments/da3_periodic_group_softpatch_full_scene_lidar_init
+model_path: outputs/C_lidar_init_da3_feedback
 data:
   use_colmap: true
   filter_colmap: true
@@ -25,7 +25,7 @@ train:
     enabled: true
     mode: feedback_update
     start_iter: 1000
-    interval: 500
+    interval: 1000
     risk_source: da3_boundary
     supervision_mode: da3_unsupervised
     feedback_mode: group_softpatch

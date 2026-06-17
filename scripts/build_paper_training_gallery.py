@@ -16,13 +16,10 @@ from pathlib import Path
 
 
 DEFAULT_EXPERIMENTS = [
-    "streetgs_original_baseline",
-    "da3_only_full_scene_lidar_init",
-    "da3_periodic_group_softpatch_full_scene_lidar_init",
-    "da3_periodic_group_softpatch_opacity_reg",
-    "da3_periodic_group_softpatch_opacity_decay",
-    "lidar_supervised_reference",
-    "hybrid_reference",
+    "A_streetgs_lidar_init_lidar_sup",
+    "B_lidar_init_no_lidar_sup",
+    "C_lidar_init_da3_feedback",
+    "PVC_no_lidar_init_da3_feedback",
 ]
 
 
@@ -193,7 +190,7 @@ def build_html(out_dir, rows):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output-root", default="outputs/a100_main_experiments")
+    parser.add_argument("--output-root", default="outputs")
     parser.add_argument("--out-dir", default="outputs/paper_results_full_scene_v2/training_gallery")
     parser.add_argument("--experiments", nargs="*", default=None, help="Experiment directory names under output-root. Defaults to known formal full-scene names.")
     parser.add_argument("--copy-assets", action="store_true", help="Also copy individual RGB/depth/risk assets in addition to comparison panels.")

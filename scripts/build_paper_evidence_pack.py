@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Build a paper-ready evidence directory from GeoFeedback-GS experiment outputs.
 
 The script is intentionally conservative: it never fabricates metrics. Missing
@@ -14,12 +14,16 @@ from pathlib import Path
 
 
 EXPERIMENT_ORDER = [
+    "A_streetgs_lidar_init_lidar_sup",
+    "B_lidar_init_no_lidar_sup",
+    "C_lidar_init_da3_feedback",
+    "PVC_no_lidar_init_da3_feedback",
     "streetgs_original_baseline",
     "baseline_streetgs",
     "baseline_streetgs_colmap_5000",
-    "da3_only_full_scene_lidar_init",
-    "da3_only",
-    "da3_only_colmap_5000",
+    "no_lidar_supervision_control",
+    "no_lidar_supervision_control",
+    "no_lidar_supervision_control_colmap_5000",
     "da3_periodic_group_softpatch_full_scene_lidar_init",
     "da3_periodic_group_softpatch",
     "da3_periodic_group_softpatch_colmap_5000",
@@ -465,7 +469,7 @@ def missing_items(exp_name, exp_dir, feedback_rows):
     for label, path in required:
         if not path.exists():
             rows.append({"experiment": exp_name, "missing": label, "severity": "paper_table_gap"})
-    if exp_name not in {"baseline_streetgs", "da3_only"} and not [r for r in feedback_rows if r.get("status") != "not_applicable"]:
+    if exp_name not in {"baseline_streetgs", "no_lidar_supervision_control"} and not [r for r in feedback_rows if r.get("status") != "not_applicable"]:
         rows.append({"experiment": exp_name, "missing": "feedback_controller/iter_*/feedback_controller_manifest.json", "severity": "method_evidence_gap"})
     if not any((exp_dir / "final_eval").glob("**/*panel*.*")) and not any((exp_dir / "feedback_controller").glob("**/*panel*.*")):
         rows.append({"experiment": exp_name, "missing": "representative panels", "severity": "figure_gap"})
@@ -480,7 +484,7 @@ def missing_items(exp_name, exp_dir, feedback_rows):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output-root", default="outputs/a100_main_experiments")
+    parser.add_argument("--output-root", default="outputs")
     parser.add_argument("--paper-dir", default="outputs/paper_evidence_full_scene_v2")
     parser.add_argument("--final-eval-root", default="outputs/final_evaluation_test_only_v2")
     parser.add_argument("--geometry-eval-root", default="", help="Optional geometry consistency evaluation root.")
@@ -624,3 +628,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

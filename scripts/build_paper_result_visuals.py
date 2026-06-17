@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Render paper-facing tables and plots from a GeoFeedback-GS evidence pack."""
 
 import argparse
@@ -10,29 +10,32 @@ from pathlib import Path
 
 
 FORMAL_EXPERIMENTS = [
-    "streetgs_original_baseline",
-    "da3_only_full_scene_lidar_init",
-    "da3_periodic_group_softpatch_full_scene_lidar_init",
-    "pv_da3_feedback_obj",
+    "A_streetgs_lidar_init_lidar_sup",
+    "B_lidar_init_no_lidar_sup",
+    "C_lidar_init_da3_feedback",
+    "PVC_no_lidar_init_da3_feedback",
 ]
 
 FINAL_TO_TRAIN_EXPERIMENT = {
-    "a100_baseline_streetgs": "streetgs_original_baseline",
-    "a100_da3_only": "da3_only_full_scene_lidar_init",
-    "a100_da3_periodic_group_softpatch": "da3_periodic_group_softpatch_full_scene_lidar_init",
-    "a100_pv_da3_feedback_obj": "pv_da3_feedback_obj",
+    "a100_baseline_streetgs": "A_streetgs_lidar_init_lidar_sup",
+    "a100_no_lidar_supervision_control": "B_lidar_init_no_lidar_sup",
+    "a100_da3_periodic_group_softpatch": "C_lidar_init_da3_feedback",
+    "a100_pv_da3_feedback_obj": "PVC_no_lidar_init_da3_feedback",
 }
 
 EXPERIMENT_LABELS = {
     "a100_baseline_streetgs": "A StreetGS",
+    "A_streetgs_lidar_init_lidar_sup": "A StreetGS",
     "streetgs_original_baseline": "A StreetGS",
     "baseline_streetgs": "A StreetGS",
     "baseline_streetgs_colmap_5000": "A StreetGS",
-    "a100_da3_only": "B DA3-only",
-    "da3_only_full_scene_lidar_init": "B DA3-only",
-    "da3_only": "B DA3-only",
-    "da3_only_colmap_5000": "B DA3-only",
+    "a100_no_lidar_supervision_control": "B No-LiDAR-Sup",
+    "B_lidar_init_no_lidar_sup": "B No-LiDAR-Sup",
+    "no_lidar_supervision_control": "B No-LiDAR-Sup",
+    "no_lidar_supervision_control": "B No-LiDAR-Sup",
+    "no_lidar_supervision_control_colmap_5000": "B No-LiDAR-Sup",
     "a100_da3_periodic_group_softpatch": "C DA3+Feedback",
+    "C_lidar_init_da3_feedback": "C DA3+Feedback",
     "da3_periodic_group_softpatch_full_scene_lidar_init": "C DA3+Feedback",
     "da3_periodic_group_softpatch": "C DA3+Feedback",
     "da3_periodic_group_softpatch_colmap_5000": "C DA3+Feedback",
@@ -42,6 +45,7 @@ EXPERIMENT_LABELS = {
     "lidar_supervised_reference": "E LiDAR-supervised Ref",
     "hybrid_reference": "Hybrid Ref",
     "a100_pv_da3_feedback_obj": "PV-C Pure-Vision",
+    "PVC_no_lidar_init_da3_feedback": "PV-C Pure-Vision",
     "pv_da3_feedback_obj": "PV-C Pure-Vision",
 }
 
@@ -708,3 +712,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

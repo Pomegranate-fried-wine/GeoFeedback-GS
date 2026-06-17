@@ -35,6 +35,38 @@ except ImportError:
     TENSORBOARD_FOUND = False
 
 
+SCALAR_TRACE_FIELDS = [
+    "iteration",
+    "loss",
+    "train_psnr",
+    "l1_loss",
+    "sky_loss",
+    "obj_acc_loss",
+    "guided_feedback_lidar_loss",
+    "guided_feedback_da3_structure_loss",
+    "da3_structure_loss",
+    "da3_edge_loss",
+    "da3_ranking_loss",
+    "da3_side_loss",
+    "guided_feedback_valid_pixels",
+    "guided_feedback_region_count",
+    "guided_feedback_region_pixels",
+    "guided_feedback_da3_skipped_low_support",
+    "feedback_controller_triggered",
+    "feedback_controller_active_updated",
+    "feedback_controller_status_valid",
+    "gaussian_control_opacity_reg_loss",
+    "gaussian_control_opacity_reg_loss_count",
+    "gaussian_control_opacity_mean",
+    "gaussian_control_opacity_min",
+    "gaussian_control_opacity_max",
+    "save_iteration",
+    "checkpoint_iteration",
+    "opacity_reset_iteration",
+    "densification_iteration",
+]
+
+
 def _print_cuda_diagnostics(stage):
     visible = os.environ.get("CUDA_VISIBLE_DEVICES", "<unset>")
     print(f"[CUDA][{stage}] CUDA_VISIBLE_DEVICES={visible}")
@@ -261,8 +293,26 @@ def _write_scalar_trace(trace_path, iteration, scalar_dict):
             except Exception:
                 value = str(value)
             payload[key] = value
-        with open(trace_path, "a", encoding="utf-8") as f:
+        jsonl_path = trace_path
+        if jsonl_path.endswith(".csv"):
+            jsonl_path = jsonl_path[:-4] + ".jsonl"
+        with open(jsonl_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        csv_path = trace_path if trace_path.endswith(".csv") else trace_path + ".csv"
+        csv_row = {key: payload.get(key, "") for key in SCALAR_TRACE_FIELDS}
+        extra = {
+            key: value
+            for key, value in payload.items()
+            if key not in SCALAR_TRACE_FIELDS
+        }
+        csv_row["extra_json"] = json.dumps(extra, ensure_ascii=False, sort_keys=True)
+        fieldnames = SCALAR_TRACE_FIELDS + ["extra_json"]
+        exists = os.path.exists(csv_path)
+        with open(csv_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if not exists:
+                writer.writeheader()
+            writer.writerow(csv_row)
     except Exception as exc:
         print(f"[Trace][WARN] failed to write scalar trace: {exc}")
 
@@ -417,6 +467,23 @@ def _select_eval_cameras(scene, train_args):
     return selected
 
 
+def _full_snapshot_iterations(train_args):
+    return {int(v) for v in list(getattr(train_args, "full_snapshot_iterations", []) or [])}
+
+
+def _periodic_eval_camera_records(iteration, scene, train_args, sampled_cameras):
+    snapshot_iterations = _full_snapshot_iterations(train_args)
+    if int(iteration) not in snapshot_iterations:
+        return [("train", cam) for cam in sampled_cameras], False
+    splits = {str(v).lower() for v in list(getattr(train_args, "full_snapshot_splits", ["train", "test"]) or [])}
+    records = []
+    if "train" in splits:
+        records.extend(("train", cam) for cam in _sorted_cameras_for_eval(scene.getTrainCameras()))
+    if "test" in splits:
+        records.extend(("test", cam) for cam in _sorted_cameras_for_eval(scene.getTestCameras()))
+    return records, True
+
+
 def _safe_depth_color(depth_tensor):
     try:
         depth_np = np.squeeze(depth_tensor.detach().cpu().numpy())
@@ -516,8 +583,25 @@ def _write_periodic_eval(iteration, eval_cameras, scene, renderer, da3_bridge, g
     asset_dir = os.path.join(iter_dir, "assets")
     os.makedirs(panel_dir, exist_ok=True)
     os.makedirs(asset_dir, exist_ok=True)
-    manifest = {"iteration": int(iteration), "views": []}
-    for cam in eval_cameras:
+    camera_records, is_full_snapshot = _periodic_eval_camera_records(iteration, scene, train_args, eval_cameras)
+    feedback_enabled = bool(getattr(cfg.train.feedback_controller, "enabled", False))
+    manifest = {
+        "iteration": int(iteration),
+        "experiment": str(getattr(cfg, "exp_name", "")),
+        "model_path": str(getattr(cfg, "model_path", "")),
+        "snapshot_type": "full_train_test" if is_full_snapshot else "sampled_periodic",
+        "is_forced_full_snapshot": bool(is_full_snapshot),
+        "requested_full_snapshot_splits": list(getattr(train_args, "full_snapshot_splits", []) or []),
+        "view_count": len(camera_records),
+        "uses_lidar_initialization": bool(getattr(cfg.data, "allow_lidar_initialization", False)) and not bool(getattr(cfg.data, "require_no_lidar_initialization", False)),
+        "requires_no_lidar_initialization": bool(getattr(cfg.data, "require_no_lidar_initialization", False)),
+        "uses_lidar_supervision": bool(getattr(cfg.train.guided_feedback, "use_lidar_depth", False)) or float(getattr(cfg.optim, "lambda_depth_lidar", 0.0)) > 0.0,
+        "feedback_controller_enabled": feedback_enabled,
+        "active_feedback_signal_path": str(getattr(guided_feedback, "signal_path", "") or "") if guided_feedback.enabled else "",
+        "feedback_note": "risk/responsibility maps are active only for feedback groups" if feedback_enabled else "no-feedback baseline/control; risk and responsibility overlays are intentionally not claimed",
+        "views": [],
+    }
+    for split_name, cam in camera_records:
         try:
             gt = cam.original_image.cuda(non_blocking=True) if not cam.original_image.is_cuda else cam.original_image
             mask = cam.guidance["mask"].cuda(non_blocking=True).bool() if "mask" in cam.guidance else torch.ones_like(gt[0:1]).bool()
@@ -555,7 +639,7 @@ def _write_periodic_eval(iteration, eval_cameras, scene, renderer, da3_bridge, g
                 [("Rendered Depth", rendered_depth), ("DA3 Depth / Edge", da3_or_edge), ("LiDAR Sparse Overlay", lidar_overlay)],
                 [("DA3 Boundary Risk", risk_vis), ("Selected Risk / Regions", selected_vis), ("Accumulation / Alpha", acc_vis)],
             ]
-            if getattr(cfg.train.feedback_controller, "enabled", False):
+            if feedback_enabled:
                 rows.append([
                     ("Contribution Top-K Overlay", contribution_vis),
                     ("Responsible Group Overlay", group_vis),
@@ -563,7 +647,7 @@ def _write_periodic_eval(iteration, eval_cameras, scene, renderer, da3_bridge, g
                 ])
             cam_id = int(cam.meta.get("cam", -1))
             image_name = str(getattr(cam, "image_name", "view")).replace(os.sep, "_")
-            stem = f"iter_{iteration:06d}_cam{cam_id}_{image_name}"
+            stem = f"iter_{iteration:06d}_{split_name}_cam{cam_id}_{image_name}"
             paths = {
                 "gt_rgb_path": _save_rgb_image(os.path.join(asset_dir, f"{stem}_gt_rgb.jpg"), _tensor_rgb_u8(gt)),
                 "rendered_rgb_path": _save_rgb_image(os.path.join(asset_dir, f"{stem}_rendered_rgb.jpg"), _tensor_rgb_u8(rgb)),
@@ -576,9 +660,13 @@ def _write_periodic_eval(iteration, eval_cameras, scene, renderer, da3_bridge, g
                 "accumulation_path": _save_rgb_image(os.path.join(asset_dir, f"{stem}_accumulation.jpg"), acc_vis),
                 "softpatch_mask_path": _save_rgb_image(os.path.join(asset_dir, f"{stem}_active_softpatch_mask.jpg"), softpatch_vis),
             }
-            panel_path = os.path.join(panel_dir, f"iter_{iteration:06d}_cam{cam_id}_{image_name}_comparison_panel.jpg")
+            if feedback_enabled:
+                paths["risk_region_path"] = paths["selected_risk_path"]
+                paths["responsible_gaussian_path"] = paths["softpatch_mask_path"]
+            panel_path = os.path.join(panel_dir, f"{stem}_comparison_panel.jpg")
             _write_panel(panel_path, rows)
-            prev = previous_stats.get(image_name, {})
+            view_key = f"{split_name}:{image_name}"
+            prev = previous_stats.get(view_key, {})
             prev_psnr = prev.get("psnr")
             warnings = []
             if prev_psnr is not None and psnr_value < prev_psnr - float(getattr(train_args, "psnr_drop_warn_threshold", 5.0)):
@@ -589,8 +677,9 @@ def _write_periodic_eval(iteration, eval_cameras, scene, renderer, da3_bridge, g
                 warnings.append("acc_saturated_or_empty")
             if warnings:
                 print(f"[PeriodicEval][WARN] iter={iteration} view={image_name}: {', '.join(warnings)}")
-            previous_stats[image_name] = {"psnr": psnr_value}
+            previous_stats[view_key] = {"psnr": psnr_value}
             manifest["views"].append({
+                "split": split_name,
                 "cam_id": cam_id,
                 "image_name": image_name,
                 "panel_path": panel_path,
@@ -604,6 +693,7 @@ def _write_periodic_eval(iteration, eval_cameras, scene, renderer, da3_bridge, g
         except Exception as exc:
             print(f"[PeriodicEval][WARN] failed at iter={iteration} view={getattr(cam, 'image_name', '')}: {exc}")
             manifest["views"].append({
+                "split": split_name,
                 "cam_id": int(getattr(cam, "meta", {}).get("cam", -1)),
                 "image_name": str(getattr(cam, "image_name", "")),
                 "status": "failed",
@@ -611,6 +701,9 @@ def _write_periodic_eval(iteration, eval_cameras, scene, renderer, da3_bridge, g
             })
     with open(os.path.join(iter_dir, "panel_manifest.json"), "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2, ensure_ascii=False)
+    if is_full_snapshot:
+        with open(os.path.join(iter_dir, "snapshot_manifest.json"), "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2, ensure_ascii=False)
 
 
 def _selected_bbox_from_trigger(trigger_dir, width, height):
@@ -970,6 +1063,8 @@ def training():
             loss += optim_args.lambda_color_correction * color_correction_reg_loss
                     
         scalar_dict['loss'] = loss.item()
+        with torch.no_grad():
+            scalar_dict["train_psnr"] = float(psnr(image, gt_image, mask).mean().detach().item())
         _write_scalar_trace(getattr(training_args, "scalar_trace_path", ""), iteration, scalar_dict)
         
         loss.backward()
