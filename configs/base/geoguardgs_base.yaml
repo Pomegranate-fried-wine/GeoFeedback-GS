@@ -107,8 +107,9 @@ train:
     repair_mode: "none"
     output_dir: ""
     max_regions: 30
-    max_pixels_per_region: 64
+    max_pixels_per_region: 4096
     top_contributors: 8
+    spatial_cell_size: 96
     contribution_source: live_current_model
     use_cached_if_exists: false
     recompute_risk: true

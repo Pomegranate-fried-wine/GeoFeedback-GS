@@ -367,8 +367,9 @@ Training and evaluation scripts produce several complementary output types:
 
 - `metrics/train_loss_trace.csv` and `metrics/train_loss_trace.jsonl`: per-iteration loss, training PSNR, guided feedback, DA3, and control scalars.
 - `metrics/eval_summary_full.csv`: full train/test evaluation summary every 5000 iterations.
-- `periodic_eval/`: fixed-view RGB/depth diagnostic panels during training. At iterations `1000, 3000, 5000, 10000, 15000, 20000, 25000, 30000`, it switches to train+test all-view snapshots and writes `snapshot_manifest.json`.
-- `feedback_controller/`: risk, contribution, responsible group, softpatch signal, and audit manifests. C/PV-C also write original-resolution overlays under `feedback_controller/iter_XXXXXX/visual_overlays/`, including RGB/depth images with red risk regions and cyan responsible-group annotations.
+- `periodic_eval/`: fixed-view RGB/depth diagnostic panels during training. At iterations `1000, 3000, 5000, 10000, 15000, 20000, 25000, 30000`, it switches to train+test all-view snapshots, writes `snapshot_manifest.json`, and stores single-view files under `gt/`, `rgb/`, `depth/`, plus C/PV-C `feedback_risk_score/`, `feedback_responsible_groups/`, and `feedback_risk_and_groups/`.
+- `feedback_controller/`: risk, contribution, responsible group, softpatch signal, and audit manifests. C/PV-C cache original-view DA3 priors under `da3_risk_cache/`, write dynamic risk matrices under each trigger's `risk_stage/` (`*_risk_score_matrix.npy`, heatmaps, risk-band masks, rendered-RGB quality risk maps), per-risk-pixel Gaussian contribution dumps under `contribution_stage/`, grouped responsibility tables under `responsible_group_stage/`, and original-resolution overlays under `visual_overlays/`.
+- `final_visual_eval/`: generated after training by `python scripts/build_final_experiment_visuals.py`; contains `GT | A | PV-C` RGB montages, optional `GT | A | B | C | PV-C` RGB montages, feedback matrix visualizations, loss curves, PSNR curves, and `final_visual_eval_manifest.json`.
 - `final_evaluation_test_only_v2/`: paper-grade held-out RGB/object/background metrics.
 - `geometry_eval_test_only_v1/`: held-out geometry consistency metrics and panels.
 - `paper_evidence_geofeedback_gs/`: compact tables and figures for paper/PPT writing.

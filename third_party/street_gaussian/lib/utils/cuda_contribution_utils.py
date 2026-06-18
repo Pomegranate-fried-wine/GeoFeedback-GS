@@ -236,6 +236,8 @@ def write_live_contribution_outputs(result, out_dir, view_id="live", region_id="
         cuda_contribution_ids=result.get("view_local_ids", np.zeros((0, 0), dtype=np.int64)),
         stable_gaussian_ids=result.get("stable_gaussian_ids", np.zeros((0, 0), dtype=np.int64)),
         model_local_indices=result.get("model_local_indices", np.zeros((0, 0), dtype=np.int64)),
+        model_names=result.get("model_names", np.zeros((0, 0), dtype="<U64")),
+        da3_risk=result.get("selected_risk_scores", np.zeros((0,), dtype=np.float32)),
         contribution_weights=result.get("contribution_weight", np.zeros((0, 0), dtype=np.float32)),
         cuda_alpha=result.get("alpha", np.zeros((0, 0), dtype=np.float32)),
         cuda_transmittance=result.get("transmittance", np.zeros((0, 0), dtype=np.float32)),

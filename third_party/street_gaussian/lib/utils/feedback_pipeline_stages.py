@@ -10,6 +10,11 @@ import torch
 
 from lib.utils.cuda_contribution_utils import capture_contributions_cuda_live, write_live_contribution_outputs
 
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+
 
 def ensure_dir(path):
     os.makedirs(path, exist_ok=True)
@@ -43,42 +48,244 @@ def _normalize(x, mask):
     return np.clip((x - lo) / max(float(hi - lo), 1e-6), 0, 1).astype(np.float32)
 
 
-def build_da3_boundary_risk_stage(rendered_outputs, views, out_dir, max_pixels_per_region=64):
-    """Build a lightweight DA3/rendered boundary-risk summary from current rendered depth.
+def _safe_view_id(value):
+    return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in str(value or "unknown"))
 
-    This stage is intentionally minimal. If DA3 depth is not provided in
-    rendered_outputs, it records rendered-edge risk only and marks DA3 as missing.
-    """
+
+def _copy_existing(src, dst):
+    if src and os.path.exists(src):
+        ensure_dir(os.path.dirname(dst))
+        shutil.copyfile(src, dst)
+        return dst
+    return ""
+
+
+def _load_da3_risk_cache(cache_dir, view_id, depth_shape):
+    if not cache_dir:
+        return None
+    view_cache_dir = os.path.join(cache_dir, _safe_view_id(view_id))
+    manifest_path = os.path.join(view_cache_dir, "risk_cache_manifest.json")
+    risk_matrix_path = os.path.join(view_cache_dir, "risk_score_matrix.npy")
+    selected_path = os.path.join(view_cache_dir, "selected_pixels.npy")
+    selected_risk_path = os.path.join(view_cache_dir, "selected_pixel_risk_scores.npy")
+    if not (os.path.exists(manifest_path) and os.path.exists(risk_matrix_path) and os.path.exists(selected_path) and os.path.exists(selected_risk_path)):
+        return None
+    try:
+        manifest = read_json(manifest_path)
+        if list(manifest.get("image_shape", [])) != [int(depth_shape[0]), int(depth_shape[1])]:
+            return None
+        return {
+            "view_cache_dir": view_cache_dir,
+            "manifest": manifest,
+            "risk_matrix_path": risk_matrix_path,
+            "risk_band_mask_path": os.path.join(view_cache_dir, "risk_band_mask.npy"),
+            "selected_pixels_path": selected_path,
+            "selected_pixel_risk_scores_path": selected_risk_path,
+            "risk_score_heatmap_path": os.path.join(view_cache_dir, "risk_score_heatmap.png"),
+            "risk_band_mask_png_path": os.path.join(view_cache_dir, "risk_band_mask.png"),
+            "da3_edge_score_path": os.path.join(view_cache_dir, "da3_edge_score.npy"),
+            "da3_edge_score_png_path": os.path.join(view_cache_dir, "da3_edge_score.png"),
+            "rendered_edge_score_path": os.path.join(view_cache_dir, "rendered_edge_score.npy"),
+            "rendered_edge_score_png_path": os.path.join(view_cache_dir, "rendered_edge_score.png"),
+        }
+    except Exception:
+        return None
+
+
+def _rgb_quality_risk(rendered_outputs, depth_shape):
+    rgb = rendered_outputs.get("rgb")
+    camera = rendered_outputs.get("camera")
+    gt = getattr(camera, "original_image", None) if camera is not None else None
+    if torch.is_tensor(rgb):
+        rgb = rgb.detach().float().cpu().numpy()
+    if torch.is_tensor(gt):
+        gt = gt.detach().float().cpu().numpy()
+    if rgb is None or gt is None:
+        return np.zeros(depth_shape, dtype=np.float32), False, "missing_rendered_or_gt_rgb"
+    rgb = np.asarray(rgb, dtype=np.float32)
+    gt = np.asarray(gt, dtype=np.float32)
+    if rgb.ndim == 3 and rgb.shape[0] in {1, 3, 4}:
+        rgb = np.transpose(rgb[:3], (1, 2, 0))
+    if gt.ndim == 3 and gt.shape[0] in {1, 3, 4}:
+        gt = np.transpose(gt[:3], (1, 2, 0))
+    if rgb.shape[:2] != tuple(depth_shape) or gt.shape[:2] != tuple(depth_shape):
+        if cv2 is None:
+            return np.zeros(depth_shape, dtype=np.float32), False, "rgb_shape_mismatch_without_cv2"
+        rgb = cv2.resize(rgb, (depth_shape[1], depth_shape[0]), interpolation=cv2.INTER_LINEAR)
+        gt = cv2.resize(gt, (depth_shape[1], depth_shape[0]), interpolation=cv2.INTER_LINEAR)
+    rgb = np.clip(rgb, 0.0, 1.0)
+    gt = np.clip(gt, 0.0, 1.0)
+    err = np.mean(np.abs(rgb - gt), axis=-1).astype(np.float32)
+    gray_render = np.mean(rgb, axis=-1).astype(np.float32)
+    gray_gt = np.mean(gt, axis=-1).astype(np.float32)
+    edge_gap = np.abs(_grad_mag_np(gray_render) - _grad_mag_np(gray_gt)).astype(np.float32)
+    mask = np.isfinite(err) & np.isfinite(edge_gap)
+    rgb_risk = 0.70 * _normalize(err, mask) + 0.30 * _normalize(edge_gap, mask)
+    return rgb_risk.astype(np.float32), True, "rendered_rgb_l1_plus_rgb_edge_mismatch"
+
+
+def build_da3_boundary_risk_stage(rendered_outputs, views, out_dir, max_pixels_per_region=64, cache_dir=""):
+    """Build an original-resolution DA3-prior risk matrix and selected risk band."""
     ensure_dir(out_dir)
     depth = rendered_outputs.get("depth")
     acc = rendered_outputs.get("acc")
+    da3_depth = rendered_outputs.get("da3_depth")
     view_id = rendered_outputs.get("view_id", views[0] if views else "unknown")
     if torch.is_tensor(depth):
         depth = depth.detach().float().cpu().numpy().squeeze()
     if torch.is_tensor(acc):
         acc = acc.detach().float().cpu().numpy().squeeze()
+    if torch.is_tensor(da3_depth):
+        da3_depth = da3_depth.detach().float().cpu().numpy().squeeze()
     if depth is None:
         payload = {"status": "failed", "reason": "missing rendered depth", "views": views}
         write_json(os.path.join(out_dir, "risk_summary.json"), payload)
         return payload
     depth = np.asarray(depth, dtype=np.float32).squeeze()
     acc = np.ones_like(depth, dtype=np.float32) if acc is None else np.asarray(acc, dtype=np.float32).squeeze()
+    cached = _load_da3_risk_cache(cache_dir, view_id, depth.shape)
+    if cached is not None:
+        base_risk = np.load(cached["risk_matrix_path"]).astype(np.float32)
+        rgb_risk, rgb_available, rgb_note = _rgb_quality_risk(rendered_outputs, depth.shape)
+        valid = np.isfinite(depth) & np.isfinite(acc) & (acc > 0.03)
+        risk = np.where(valid, np.clip(0.70 * base_risk + 0.30 * rgb_risk, 0.0, 1.0), 0.0).astype(np.float32)
+        if np.any(valid):
+            thr = np.percentile(risk[valid], 92)
+            band = valid & (risk >= thr) & (risk > 0)
+        else:
+            band = np.zeros_like(valid, dtype=bool)
+        if cv2 is not None and np.any(band):
+            band = cv2.dilate(band.astype(np.uint8), np.ones((5, 5), dtype=np.uint8), iterations=1).astype(bool) & valid
+        ys, xs = np.where(band)
+        truncated = False
+        if len(xs) > max_pixels_per_region:
+            order = np.argsort(risk[ys, xs])[::-1][:max_pixels_per_region]
+            xs, ys = xs[order], ys[order]
+            truncated = True
+        selected = np.stack([xs, ys], axis=1).astype(np.int64) if len(xs) else np.zeros((0, 2), dtype=np.int64)
+        selected_risk = risk[selected[:, 1], selected[:, 0]].astype(np.float32) if len(selected) else np.zeros((0,), dtype=np.float32)
+        local_risk_path = os.path.join(out_dir, f"{view_id}_risk_score_matrix.npy")
+        local_band_path = os.path.join(out_dir, f"{view_id}_risk_band_mask.npy")
+        local_selected_path = os.path.join(out_dir, f"{view_id}_selected_pixels.npy")
+        local_selected_risk_path = os.path.join(out_dir, f"{view_id}_selected_pixel_risk_scores.npy")
+        local_rgb_risk_path = os.path.join(out_dir, f"{view_id}_rendered_rgb_quality_risk.npy")
+        np.save(local_risk_path, risk.astype(np.float32))
+        np.save(local_band_path, band.astype(np.uint8))
+        np.save(local_selected_path, selected)
+        np.save(local_selected_risk_path, selected_risk)
+        np.save(local_rgb_risk_path, rgb_risk.astype(np.float32))
+        risk_heatmap_path = os.path.join(out_dir, f"{view_id}_risk_score_heatmap.png")
+        rgb_risk_heatmap_path = os.path.join(out_dir, f"{view_id}_rendered_rgb_quality_risk.png")
+        risk_band_png_path = os.path.join(out_dir, f"{view_id}_risk_band_mask.png")
+        if cv2 is not None:
+            cv2.imwrite(risk_heatmap_path, _colorize01(risk))
+            cv2.imwrite(rgb_risk_heatmap_path, _colorize01(rgb_risk))
+            cv2.imwrite(risk_band_png_path, (band.astype(np.uint8) * 255))
+        payload = {
+            "status": "valid",
+            "risk_source": "da3_boundary",
+            "selected_pixel_source": "cached_da3_boundary_prior_plus_dynamic_rendered_rgb_quality",
+            "uses_lidar_selected_pixels": False,
+            "view_id": view_id,
+            "views": views,
+            "selected_pixels_count": int(len(selected)),
+            "risk_band_pixel_count": int(np.count_nonzero(band)),
+            "selected_pixels_truncated": bool(truncated),
+            "risk_threshold_percentile": 92,
+            "risk_map_path": local_risk_path,
+            "risk_score_matrix_path": local_risk_path,
+            "risk_band_mask_path": local_band_path,
+            "risk_score_heatmap_path": risk_heatmap_path if cv2 is not None else "",
+            "risk_band_mask_png_path": risk_band_png_path if cv2 is not None else "",
+            "selected_pixel_risk_scores_path": local_selected_risk_path,
+            "da3_edge_score_path": cached["da3_edge_score_path"] if os.path.exists(cached["da3_edge_score_path"]) else "",
+            "da3_edge_score_png_path": cached["da3_edge_score_png_path"] if os.path.exists(cached["da3_edge_score_png_path"]) else "",
+            "rendered_edge_score_path": cached["rendered_edge_score_path"] if os.path.exists(cached["rendered_edge_score_path"]) else "",
+            "rendered_edge_score_png_path": cached["rendered_edge_score_png_path"] if os.path.exists(cached["rendered_edge_score_png_path"]) else "",
+            "rendered_rgb_quality_risk_path": local_rgb_risk_path,
+            "rendered_rgb_quality_risk_png_path": rgb_risk_heatmap_path if cv2 is not None else "",
+            "rendered_rgb_quality_available": bool(rgb_available),
+            "selected_pixels_path": local_selected_path,
+            "da3_depth_available": bool(cached["manifest"].get("da3_depth_available", True)),
+            "risk_cache_hit": True,
+            "risk_cache_dir": cached["view_cache_dir"],
+            "note": f"Loaded cached original-view DA3 risk prior, then dynamically boosted risk by current rendered RGB quality ({rgb_note}); current Gaussian contribution is recomputed downstream.",
+        }
+        write_json(os.path.join(out_dir, "risk_summary.json"), payload)
+        return payload
     valid = np.isfinite(depth) & np.isfinite(acc) & (acc > 0.03)
     norm_depth = _normalize(depth / np.maximum(acc, 1e-6), valid)
     rendered_edge = _grad_mag_np(norm_depth)
-    if np.any(valid):
-        thr = np.percentile(rendered_edge[valid], 95)
-        ys, xs = np.where(valid & (rendered_edge >= thr))
+    da3_depth_available = da3_depth is not None and np.size(da3_depth) > 0
+    if da3_depth_available:
+        da3_depth = np.asarray(da3_depth, dtype=np.float32).squeeze()
+        if da3_depth.shape != depth.shape:
+            if cv2 is None:
+                da3_depth_available = False
+            else:
+                da3_depth = cv2.resize(da3_depth, (depth.shape[1], depth.shape[0]), interpolation=cv2.INTER_LINEAR)
+    if da3_depth_available:
+        da3_norm = _normalize(da3_depth, np.isfinite(da3_depth))
+        da3_edge = _grad_mag_np(da3_norm)
+        edge_gap = np.clip(da3_edge - rendered_edge, 0.0, None)
+        edge_mismatch = np.abs(da3_edge - rendered_edge)
+        risk = 0.65 * _normalize(da3_edge, np.isfinite(da3_edge)) + 0.25 * _normalize(edge_gap, valid) + 0.10 * _normalize(edge_mismatch, valid)
+        risk_source_note = "DA3 prior edge strength plus rendered-depth edge mismatch."
     else:
-        ys, xs = np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64)
+        da3_edge = np.zeros_like(rendered_edge, dtype=np.float32)
+        risk = _normalize(rendered_edge, valid)
+        risk_source_note = "Fallback rendered-depth edge risk because DA3 prior was unavailable."
+    risk = np.where(valid & np.isfinite(risk), risk, 0.0).astype(np.float32)
+    da3_prior_risk = risk.copy()
+    rgb_risk, rgb_available, rgb_note = _rgb_quality_risk(rendered_outputs, depth.shape)
+    risk = np.where(valid, np.clip(0.70 * risk + 0.30 * rgb_risk, 0.0, 1.0), 0.0).astype(np.float32)
+    if np.any(valid):
+        thr = np.percentile(risk[valid], 92)
+        band = valid & (risk >= thr) & (risk > 0)
+    else:
+        band = np.zeros_like(valid, dtype=bool)
+    if cv2 is not None and np.any(band):
+        band = cv2.dilate(band.astype(np.uint8), np.ones((5, 5), dtype=np.uint8), iterations=1).astype(bool) & valid
+    ys, xs = np.where(band)
+    truncated = False
     if len(xs) > max_pixels_per_region:
-        order = np.argsort(rendered_edge[ys, xs])[::-1][:max_pixels_per_region]
+        order = np.argsort(risk[ys, xs])[::-1][:max_pixels_per_region]
         xs, ys = xs[order], ys[order]
+        truncated = True
     selected = np.stack([xs, ys], axis=1).astype(np.int64) if len(xs) else np.zeros((0, 2), dtype=np.int64)
     risk_map_path = os.path.join(out_dir, f"{view_id}_da3_boundary_risk.npy")
-    np.save(risk_map_path, rendered_edge.astype(np.float32))
+    np.save(risk_map_path, risk.astype(np.float32))
+    risk_matrix_path = os.path.join(out_dir, f"{view_id}_risk_score_matrix.npy")
+    np.save(risk_matrix_path, risk.astype(np.float32))
+    risk_band_path = os.path.join(out_dir, f"{view_id}_risk_band_mask.npy")
+    np.save(risk_band_path, band.astype(np.uint8))
+    da3_edge_path = os.path.join(out_dir, f"{view_id}_da3_edge_score.npy")
+    np.save(da3_edge_path, da3_edge.astype(np.float32))
+    rendered_edge_path = os.path.join(out_dir, f"{view_id}_rendered_edge_score.npy")
+    np.save(rendered_edge_path, rendered_edge.astype(np.float32))
     selected_path = os.path.join(out_dir, f"{view_id}_selected_pixels.npy")
     np.save(selected_path, selected)
+    selected_risk_path = os.path.join(out_dir, f"{view_id}_selected_pixel_risk_scores.npy")
+    selected_risk = risk[selected[:, 1], selected[:, 0]].astype(np.float32) if len(selected) else np.zeros((0,), dtype=np.float32)
+    np.save(selected_risk_path, selected_risk)
+    rgb_risk_path = os.path.join(out_dir, f"{view_id}_rendered_rgb_quality_risk.npy")
+    np.save(rgb_risk_path, rgb_risk.astype(np.float32))
+    risk_heatmap_path = ""
+    risk_band_png_path = ""
+    da3_edge_png_path = ""
+    rendered_edge_png_path = ""
+    rgb_risk_heatmap_path = ""
+    if cv2 is not None:
+        risk_heatmap_path = os.path.join(out_dir, f"{view_id}_risk_score_heatmap.png")
+        risk_band_png_path = os.path.join(out_dir, f"{view_id}_risk_band_mask.png")
+        da3_edge_png_path = os.path.join(out_dir, f"{view_id}_da3_edge_score.png")
+        rendered_edge_png_path = os.path.join(out_dir, f"{view_id}_rendered_edge_score.png")
+        rgb_risk_heatmap_path = os.path.join(out_dir, f"{view_id}_rendered_rgb_quality_risk.png")
+        cv2.imwrite(risk_heatmap_path, _colorize01(risk))
+        cv2.imwrite(risk_band_png_path, (band.astype(np.uint8) * 255))
+        cv2.imwrite(da3_edge_png_path, _colorize01(_normalize(da3_edge, np.isfinite(da3_edge))))
+        cv2.imwrite(rendered_edge_png_path, _colorize01(_normalize(rendered_edge, np.isfinite(rendered_edge))))
+        cv2.imwrite(rgb_risk_heatmap_path, _colorize01(rgb_risk))
     payload = {
         "status": "valid",
         "risk_source": "da3_boundary",
@@ -87,13 +294,75 @@ def build_da3_boundary_risk_stage(rendered_outputs, views, out_dir, max_pixels_p
         "view_id": view_id,
         "views": views,
         "selected_pixels_count": int(len(selected)),
+        "risk_band_pixel_count": int(np.count_nonzero(band)),
+        "selected_pixels_truncated": bool(truncated),
+        "risk_threshold_percentile": 92,
         "risk_map_path": risk_map_path,
+        "risk_score_matrix_path": risk_matrix_path,
+        "risk_band_mask_path": risk_band_path,
+        "risk_score_heatmap_path": risk_heatmap_path,
+        "risk_band_mask_png_path": risk_band_png_path,
+        "selected_pixel_risk_scores_path": selected_risk_path,
+        "da3_edge_score_path": da3_edge_path,
+        "da3_edge_score_png_path": da3_edge_png_path,
+        "rendered_edge_score_path": rendered_edge_path,
+        "rendered_edge_score_png_path": rendered_edge_png_path,
+        "rendered_rgb_quality_risk_path": rgb_risk_path,
+        "rendered_rgb_quality_risk_png_path": rgb_risk_heatmap_path,
+        "rendered_rgb_quality_available": bool(rgb_available),
         "selected_pixels_path": selected_path,
-        "da3_depth_available": False,
-        "note": "Minimal dynamic stage uses current rendered-depth edge when DA3 depth is not injected into controller.",
+        "da3_depth_available": bool(da3_depth_available),
+        "risk_cache_hit": False,
+        "risk_cache_dir": "",
+        "note": f"{risk_source_note} Dynamic risk is additionally boosted by current rendered RGB quality ({rgb_note}).",
     }
+    if cache_dir:
+        view_cache_dir = os.path.join(cache_dir, _safe_view_id(view_id))
+        ensure_dir(view_cache_dir)
+        cache_paths = {
+            "risk_score_matrix_path": os.path.join(view_cache_dir, "risk_score_matrix.npy"),
+            "risk_band_mask_path": os.path.join(view_cache_dir, "risk_band_mask.npy"),
+            "selected_pixels_path": os.path.join(view_cache_dir, "selected_pixels.npy"),
+            "selected_pixel_risk_scores_path": os.path.join(view_cache_dir, "selected_pixel_risk_scores.npy"),
+            "da3_edge_score_path": os.path.join(view_cache_dir, "da3_edge_score.npy"),
+            "rendered_edge_score_path": os.path.join(view_cache_dir, "rendered_edge_score.npy"),
+        }
+        np.save(cache_paths["risk_score_matrix_path"], da3_prior_risk.astype(np.float32))
+        np.save(cache_paths["risk_band_mask_path"], band.astype(np.uint8))
+        np.save(cache_paths["selected_pixels_path"], selected)
+        np.save(cache_paths["selected_pixel_risk_scores_path"], selected_risk)
+        np.save(cache_paths["da3_edge_score_path"], da3_edge.astype(np.float32))
+        np.save(cache_paths["rendered_edge_score_path"], rendered_edge.astype(np.float32))
+        if cv2 is not None:
+            cache_paths["risk_score_heatmap_path"] = os.path.join(view_cache_dir, "risk_score_heatmap.png")
+            cache_paths["risk_band_mask_png_path"] = os.path.join(view_cache_dir, "risk_band_mask.png")
+            cache_paths["da3_edge_score_png_path"] = os.path.join(view_cache_dir, "da3_edge_score.png")
+            cache_paths["rendered_edge_score_png_path"] = os.path.join(view_cache_dir, "rendered_edge_score.png")
+            cv2.imwrite(cache_paths["risk_score_heatmap_path"], _colorize01(risk))
+            cv2.imwrite(cache_paths["risk_band_mask_png_path"], (band.astype(np.uint8) * 255))
+            cv2.imwrite(cache_paths["da3_edge_score_png_path"], _colorize01(_normalize(da3_edge, np.isfinite(da3_edge))))
+            cv2.imwrite(cache_paths["rendered_edge_score_png_path"], _colorize01(_normalize(rendered_edge, np.isfinite(rendered_edge))))
+        cache_manifest = {
+            "view_id": view_id,
+            "image_shape": [int(depth.shape[0]), int(depth.shape[1])],
+            "risk_source": "da3_boundary",
+            "risk_threshold_percentile": 92,
+            "risk_band_pixel_count": int(np.count_nonzero(band)),
+            "selected_pixels_count": int(len(selected)),
+            "selected_pixels_truncated": bool(truncated),
+            "da3_depth_available": bool(da3_depth_available),
+            **cache_paths,
+        }
+        write_json(os.path.join(view_cache_dir, "risk_cache_manifest.json"), cache_manifest)
+        payload["risk_cache_dir"] = view_cache_dir
     write_json(os.path.join(out_dir, "risk_summary.json"), payload)
     return payload
+
+
+def _colorize01(x):
+    x = np.asarray(x, dtype=np.float32)
+    u8 = (np.clip(x, 0.0, 1.0) * 255).astype(np.uint8)
+    return cv2.applyColorMap(u8, cv2.COLORMAP_TURBO)
 
 
 def build_lidar_error_risk_stage(rendered_outputs, views, out_dir, max_pixels_per_region=64):
@@ -209,6 +478,12 @@ def run_cuda_contribution_stage(
             selected_pixels=selected_pixels,
             top_k=top_k,
         )
+        risk_score_path = risk_summary.get("selected_pixel_risk_scores_path", "")
+        if risk_score_path and os.path.exists(risk_score_path):
+            try:
+                result["selected_risk_scores"] = np.load(risk_score_path).astype(np.float32)
+            except Exception:
+                result["selected_risk_scores"] = np.ones((len(selected_pixels),), dtype=np.float32)
         view_id = risk_summary.get("view_id", "live")
         summary_path, _ = write_live_contribution_outputs(result, out_dir, view_id=view_id, region_id="live")
         shutil.copyfile(summary_path, out_path)
@@ -250,7 +525,7 @@ def run_cuda_contribution_stage(
     return payload
 
 
-def select_da3_responsible_group_stage(contribution_summary_path, out_dir, max_regions=30):
+def select_da3_responsible_group_stage(contribution_summary_path, out_dir, max_regions=30, spatial_cell_size=96):
     ensure_dir(out_dir)
     script = Path("script/select_da3_boundary_responsible_gaussian_groups.py")
     if not script.exists() or not contribution_summary_path or not os.path.exists(contribution_summary_path):
@@ -266,6 +541,8 @@ def select_da3_responsible_group_stage(contribution_summary_path, out_dir, max_r
         out_dir,
         "--max-regions",
         str(max_regions),
+        "--spatial-cell-size",
+        str(spatial_cell_size),
     ]
     subprocess.run(cmd, cwd=str(script.parent.parent), check=True)
     summary_path = os.path.join(out_dir, "group_counterfactual_summary.json")

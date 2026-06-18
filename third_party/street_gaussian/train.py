@@ -584,6 +584,11 @@ def _write_periodic_eval(iteration, eval_cameras, scene, renderer, da3_bridge, g
     os.makedirs(panel_dir, exist_ok=True)
     os.makedirs(asset_dir, exist_ok=True)
     camera_records, is_full_snapshot = _periodic_eval_camera_records(iteration, scene, train_args, eval_cameras)
+    single_dirs = {}
+    if is_full_snapshot:
+        for name in ["gt", "rgb", "depth", "feedback_risk_score", "feedback_responsible_groups", "feedback_risk_and_groups", "no_feedback"]:
+            single_dirs[name] = os.path.join(iter_dir, name)
+            os.makedirs(single_dirs[name], exist_ok=True)
     feedback_enabled = bool(getattr(cfg.train.feedback_controller, "enabled", False))
     manifest = {
         "iteration": int(iteration),
@@ -631,6 +636,7 @@ def _write_periodic_eval(iteration, eval_cameras, scene, renderer, da3_bridge, g
                     selected_vis = _mask_vis(weight_map > 1.0, (h, w))
                     softpatch_u8 = np.clip(weight_map.detach().cpu().numpy().squeeze(), 0, 4) * 60
                     softpatch_vis = cv2.applyColorMap(softpatch_u8.astype(np.uint8), cv2.COLORMAP_TURBO)
+                    risk_vis = softpatch_vis
             acc_vis = _tensor_rgb_u8(acc.repeat(3, 1, 1))
             contribution_vis = np.zeros((h, w, 3), dtype=np.uint8)
             group_vis = selected_vis.copy()
@@ -663,6 +669,28 @@ def _write_periodic_eval(iteration, eval_cameras, scene, renderer, da3_bridge, g
             if feedback_enabled:
                 paths["risk_region_path"] = paths["selected_risk_path"]
                 paths["responsible_gaussian_path"] = paths["softpatch_mask_path"]
+            if is_full_snapshot:
+                single_stem = f"{split_name}_cam{cam_id}_{image_name}"
+                paths["snapshot_gt_path"] = _save_rgb_image(os.path.join(single_dirs["gt"], f"{single_stem}.png"), _tensor_rgb_u8(gt))
+                paths["snapshot_rgb_path"] = _save_rgb_image(os.path.join(single_dirs["rgb"], f"{single_stem}.png"), _tensor_rgb_u8(rgb))
+                paths["snapshot_depth_path"] = _save_rgb_image(os.path.join(single_dirs["depth"], f"{single_stem}.png"), rendered_depth)
+                if feedback_enabled:
+                    paths["snapshot_feedback_risk_score_path"] = _save_rgb_image(os.path.join(single_dirs["feedback_risk_score"], f"{single_stem}.png"), risk_vis)
+                    paths["snapshot_feedback_responsible_groups_path"] = _save_rgb_image(os.path.join(single_dirs["feedback_responsible_groups"], f"{single_stem}.png"), group_vis)
+                    combo = cv2.addWeighted(risk_vis, 0.55, group_vis, 0.45, 0.0)
+                    paths["snapshot_feedback_risk_and_groups_path"] = _save_rgb_image(os.path.join(single_dirs["feedback_risk_and_groups"], f"{single_stem}.png"), combo)
+                else:
+                    no_feedback_manifest = {
+                        "iteration": int(iteration),
+                        "split": split_name,
+                        "cam_id": cam_id,
+                        "image_name": image_name,
+                        "reason": "feedback controller disabled for this baseline/control group",
+                    }
+                    no_feedback_path = os.path.join(single_dirs["no_feedback"], f"{single_stem}_no_feedback_manifest.json")
+                    with open(no_feedback_path, "w", encoding="utf-8") as f:
+                        json.dump(no_feedback_manifest, f, indent=2, ensure_ascii=False)
+                    paths["snapshot_no_feedback_manifest_path"] = no_feedback_path
             panel_path = os.path.join(panel_dir, f"{stem}_comparison_panel.jpg")
             _write_panel(panel_path, rows)
             view_key = f"{split_name}:{image_name}"
@@ -924,6 +952,12 @@ def training():
         scalar_dict = dict()
         if feedback_controller.should_trigger(iteration):
             with torch.no_grad():
+                da3_feedback_depth = None
+                if da3_bridge is not None:
+                    try:
+                        da3_feedback_depth = da3_bridge(viewpoint_cam)["relative_depth"].detach()
+                    except Exception as exc:
+                        print(f"[FeedbackController][WARN] DA3 risk prior unavailable at iter {iteration}: {exc}")
                 trigger_result = feedback_controller.run_trigger(
                     iteration,
                     model=gaussians,
@@ -935,6 +969,7 @@ def training():
                         "rgb": image.detach(),
                         "depth": depth.detach(),
                         "acc": acc.detach(),
+                        "da3_depth": da3_feedback_depth,
                     },
                     selected_views=[viewpoint_cam.image_name],
                     extra={

@@ -69,6 +69,7 @@ def aggregate_gaussian_records(npz, frame, top_n=None):
     order = np.asarray(npz["cuda_depth_order"], dtype=np.int32) if "cuda_depth_order" in npz else np.zeros_like(ids)
     selected = np.asarray(npz["selected_pixels"], dtype=np.int64)
     stable_matrix = np.asarray(npz["stable_gaussian_ids"], dtype=np.int64) if "stable_gaussian_ids" in npz else None
+    model_names_matrix = np.asarray(npz["model_names"]) if "model_names" in npz else None
     stable_by_row = {}
     if "candidate_view_local_indices" in npz and "candidate_gaussian_ids" in npz:
         local_rows = np.asarray(npz["candidate_view_local_indices"], dtype=np.int64).reshape(-1)
@@ -100,6 +101,8 @@ def aggregate_gaussian_records(npz, frame, top_n=None):
                     "model_name": "unknown",
                     "model_local_index": int(row),
                     "pixel_indices": [],
+                    "pixel_x_values": [],
+                    "pixel_y_values": [],
                     "raw_weight_sum": 0.0,
                     "risk_weighted_sum": 0.0,
                     "max_talpha": 0.0,
@@ -110,6 +113,11 @@ def aggregate_gaussian_records(npz, frame, top_n=None):
                 },
             )
             rec["pixel_indices"].append(int(p_idx))
+            if selected.ndim == 2 and p_idx < selected.shape[0]:
+                rec["pixel_x_values"].append(int(selected[p_idx, 0]))
+                rec["pixel_y_values"].append(int(selected[p_idx, 1]))
+            if model_names_matrix is not None and model_names_matrix.shape == ids.shape:
+                rec["model_name"] = str(model_names_matrix[p_idx, k])
             rec["raw_weight_sum"] += w
             rec["risk_weighted_sum"] += w * float(risk[p_idx])
             rec["max_talpha"] = max(rec["max_talpha"], w)
@@ -129,6 +137,14 @@ def aggregate_gaussian_records(npz, frame, top_n=None):
         rec["min_depth_order"] = int(np.min(rec["depth_orders"])) if rec["depth_orders"] else None
         rec["max_depth_order"] = int(np.max(rec["depth_orders"])) if rec["depth_orders"] else None
         rec["mean_depth"] = float(np.mean(rec["depth_values"])) if rec["depth_values"] else None
+        rec["mean_x"] = float(np.mean(rec["pixel_x_values"])) if rec["pixel_x_values"] else None
+        rec["mean_y"] = float(np.mean(rec["pixel_y_values"])) if rec["pixel_y_values"] else None
+        rec["pixel_bbox"] = [
+            int(np.min(rec["pixel_x_values"])),
+            int(np.min(rec["pixel_y_values"])),
+            int(np.max(rec["pixel_x_values"])) + 1,
+            int(np.max(rec["pixel_y_values"])) + 1,
+        ] if rec["pixel_x_values"] and rec["pixel_y_values"] else None
         rec["mean_alpha"] = float(np.mean(rec["alpha_values"])) if rec["alpha_values"] else None
         rec["mean_transmittance"] = float(np.mean(rec["transmittance_values"])) if rec["transmittance_values"] else None
         rec["selected_pixel_count"] = int(len(selected))
@@ -145,9 +161,16 @@ def make_groups(records, args):
     for rec in records:
         order = rec.get("mean_depth_order")
         if order is None:
-            bucket = "unknown_order"
+            depth_bucket = "unknown_order"
         else:
-            bucket = f"order_{int(order // max(args.depth_order_bin, 1))}"
+            depth_bucket = f"order_{int(order // max(args.depth_order_bin, 1))}"
+        if rec.get("mean_x") is None or rec.get("mean_y") is None:
+            spatial_bucket = "unknown_cell"
+        else:
+            cell = max(int(args.spatial_cell_size), 1)
+            spatial_bucket = f"cell_{int(rec['mean_x'] // cell)}_{int(rec['mean_y'] // cell)}"
+        model_bucket = str(rec.get("model_name") or "unknown")
+        bucket = f"{model_bucket}|{spatial_bucket}|{depth_bucket}"
         groups[bucket].append(rec)
     out = []
     for idx, (bucket, members) in enumerate(groups.items()):
@@ -178,6 +201,13 @@ def make_groups(records, args):
                 "stable_gaussian_ids": [int(m["stable_gaussian_id"]) for m in members],
                 "view_local_indices": [int(m["view_local_index"]) for m in members],
                 "member_count": len(members),
+                "aggregation_rule": "model_namespace + image_spatial_cell + depth_order_bin",
+                "spatial_cell_size": int(args.spatial_cell_size),
+                "mean_screen_xy": [
+                    float(np.mean([m["mean_x"] for m in members if m.get("mean_x") is not None])) if any(m.get("mean_x") is not None for m in members) else None,
+                    float(np.mean([m["mean_y"] for m in members if m.get("mean_y") is not None])) if any(m.get("mean_y") is not None for m in members) else None,
+                ],
+                "pixel_bbox": _merge_bboxes([m.get("pixel_bbox") for m in members]),
                 "support_pixels": support,
                 "shared_pixels": int(shared),
                 "group_raw_talpha_sum": raw,
@@ -196,6 +226,18 @@ def make_groups(records, args):
         )
     out.sort(key=lambda g: g["group_risk_weighted_contribution"], reverse=True)
     return out
+
+
+def _merge_bboxes(bboxes):
+    bboxes = [b for b in bboxes if b and len(b) == 4]
+    if not bboxes:
+        return None
+    return [
+        int(min(b[0] for b in bboxes)),
+        int(min(b[1] for b in bboxes)),
+        int(max(b[2] for b in bboxes)),
+        int(max(b[3] for b in bboxes)),
+    ]
 
 
 def attach_group_counterfactual(groups, frame, dryrun_lookup):
@@ -269,6 +311,7 @@ def main():
     parser.add_argument("--max-regions", type=int, default=30)
     parser.add_argument("--top-gaussians-per-region", type=int, default=50)
     parser.add_argument("--depth-order-bin", type=int, default=2)
+    parser.add_argument("--spatial-cell-size", type=int, default=96)
     parser.add_argument("--cross-boundary-order-span", type=int, default=3)
     parser.add_argument("--min-group-support", type=int, default=8)
     parser.add_argument("--min-group-size-for-mixing", type=int, default=3)

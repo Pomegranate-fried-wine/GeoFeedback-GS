@@ -76,6 +76,7 @@ class PeriodicFeedbackController:
         self.max_triggers = int(getattr(cfg_node, "max_triggers", -1))
         self.max_pixels_per_region = int(getattr(cfg_node, "max_pixels_per_region", 64))
         self.top_contributors = int(getattr(cfg_node, "top_contributors", 5))
+        self.spatial_cell_size = int(getattr(cfg_node, "spatial_cell_size", 96))
         self.feedback_mode = str(getattr(cfg_node, "feedback_mode", "none"))
         self.signal_path = str(getattr(cfg_node, "signal_path", ""))
         self.contribution_summary_path = str(getattr(cfg_node, "contribution_summary_path", ""))
@@ -99,6 +100,7 @@ class PeriodicFeedbackController:
         if not out:
             out = os.path.join(model_path or "output", "feedback_controller")
         self.output_dir = out
+        self.da3_risk_cache_dir = os.path.join(self.output_dir, "da3_risk_cache")
         self.trigger_count = 0
         self.active_feedback = None
         self._validate()
@@ -142,7 +144,11 @@ class PeriodicFeedbackController:
             "recompute_responsible_groups": self.recompute_responsible_groups,
             "recompute_softpatch": self.recompute_softpatch,
             "output_dir": self.output_dir,
+            "da3_risk_cache_dir": self.da3_risk_cache_dir,
             "contribution_source": self.contribution_source,
+            "max_pixels_per_region": self.max_pixels_per_region,
+            "top_contributors": self.top_contributors,
+            "spatial_cell_size": self.spatial_cell_size,
         }
 
     def should_trigger(self, iteration):
@@ -343,6 +349,7 @@ class PeriodicFeedbackController:
                 views,
                 stage_dir,
                 max_pixels_per_region=self.max_pixels_per_region,
+                cache_dir=self.da3_risk_cache_dir,
             )
         selected_pixels = 0
         low_evidence = 0
@@ -412,6 +419,7 @@ class PeriodicFeedbackController:
                 contribution_summary_path,
                 os.path.join(trigger_dir, "responsible_group_stage"),
                 max_regions=self.max_regions,
+                spatial_cell_size=self.spatial_cell_size,
             )
         summary = {"status": "skipped", "reason": "recompute_responsible_groups is false", "counts": {"group_count": 0}}
         _json_write(os.path.join(trigger_dir, "responsible_group_summary.json"), summary)
