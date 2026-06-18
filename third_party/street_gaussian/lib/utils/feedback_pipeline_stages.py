@@ -282,6 +282,21 @@ def build_softpatch_feedback_stage(source_signal_path, group_summary, out_dir, m
         signal = read_json(source_signal_path)
     else:
         signal = {"regions": [], "bad_contributors": [], "good_contributors": [], "low_evidence_regions": []}
+    synthesized = _synthesize_softpatch_regions_from_groups(group_summary)
+    if synthesized["regions"]:
+        signal["regions"] = synthesized["regions"]
+        signal["bad_contributors"] = synthesized["bad_contributors"]
+        signal["good_contributors"] = synthesized["good_contributors"]
+        signal["low_evidence_regions"] = synthesized["low_evidence_regions"]
+        signal["pixel_feedback_by_view"] = synthesized["pixel_feedback_by_view"]
+        signal["softpatch_activation_source"] = "responsible_group_stage"
+        signal["softpatch_activation_region_count"] = len(synthesized["regions"])
+        signal["softpatch_activation_bad_group_count"] = len(synthesized["bad_contributors"])
+    else:
+        signal.setdefault("pixel_feedback_by_view", [])
+        signal["softpatch_activation_source"] = "none"
+        signal["softpatch_activation_region_count"] = 0
+        signal["softpatch_activation_bad_group_count"] = 0
     signal["feedback_mode"] = mode
     signal["group_responsibility_summary"] = group_summary
     signal["generated_by"] = "feedback_pipeline_stages.build_softpatch_feedback_stage"
@@ -289,6 +304,155 @@ def build_softpatch_feedback_stage(source_signal_path, group_summary, out_dir, m
     signal["uses_lidar_for_labeling"] = False
     write_json(out_path, signal)
     return {"status": "valid", "path": out_path, "feedback_mode": mode}
+
+
+def _synthesize_softpatch_regions_from_groups(group_summary):
+    out = {
+        "regions": [],
+        "bad_contributors": [],
+        "good_contributors": [],
+        "low_evidence_regions": [],
+        "pixel_feedback_by_view": [],
+    }
+    if not isinstance(group_summary, dict):
+        return out
+    thresholds = group_summary.get("thresholds", {}) or {}
+    group_dir = thresholds.get("output_dir", "")
+    contribution_summary_path = thresholds.get("contribution_summary", "")
+    group_path = os.path.join(group_dir, "da3_boundary_responsible_groups.json") if group_dir else ""
+    if not group_path or not os.path.exists(group_path):
+        return out
+    try:
+        groups = read_json(group_path)
+    except Exception:
+        return out
+    if not isinstance(groups, list) or not groups:
+        return out
+    frames = _load_contribution_frames(contribution_summary_path)
+    frame_lookup = {
+        f"{frame.get('stem')}:region{frame.get('region_id')}": frame
+        for frame in frames
+        if isinstance(frame, dict)
+    }
+    groups_by_region = {}
+    for group in groups:
+        key = group.get("region_key")
+        if not key:
+            continue
+        groups_by_region.setdefault(key, []).append(group)
+
+    for region_key, region_groups in sorted(groups_by_region.items()):
+        frame = frame_lookup.get(region_key, {})
+        selected = _load_frame_selected_pixels(frame, contribution_summary_path)
+        bbox = _bbox_from_pixels(selected)
+        view_id = str(region_groups[0].get("view_id") or frame.get("stem") or region_key.split(":region", 1)[0])
+        region_id = str(region_groups[0].get("region_id") or frame.get("region_id") or region_key.split(":region", 1)[-1])
+        bad_groups = [
+            group for group in region_groups
+            if str(group.get("group_label", "")).startswith("bad_")
+            or str(group.get("future_action_tag", "")) in {"shrink_candidate", "opacity_regularization_candidate", "split_candidate"}
+        ]
+        protect_groups = [
+            group for group in region_groups
+            if str(group.get("future_action_tag", "")) == "protect"
+            or str(group.get("group_label", "")) in {"good_boundary_support_group", "rgb_protect_group"}
+        ]
+        low_groups = [group for group in region_groups if str(group.get("group_label", "")) == "low_evidence_group"]
+        if not bad_groups or bbox is None:
+            out["low_evidence_regions"].append({
+                "region_key": region_key,
+                "view_id": view_id,
+                "region_id": region_id,
+                "reason": "no_bad_group_or_missing_selected_pixel_bbox",
+                "group_count": len(region_groups),
+                "low_evidence_group_count": len(low_groups),
+            })
+            continue
+        score = float(max(float(group.get("group_risk_weighted_contribution", 0.0) or 0.0) for group in bad_groups))
+        region_record = {
+            "region_key": region_key,
+            "view_id": view_id,
+            "region_id": region_id,
+            "region_type": "responsible_group_softpatch",
+            "bbox": bbox,
+            "selected_pixel_count": int(selected.shape[0]),
+            "risk_score": score,
+            "evidence_status": "ok",
+            "bad_group_count": len(bad_groups),
+            "protect_group_count": len(protect_groups),
+        }
+        out["regions"].append(region_record)
+        for group in bad_groups:
+            out["bad_contributors"].append({
+                "region_key": region_key,
+                "view_id": view_id,
+                "region_id": region_id,
+                "group_id": group.get("group_id"),
+                "group_label": group.get("group_label"),
+                "future_action_tag": group.get("future_action_tag"),
+                "stable_gaussian_ids": group.get("stable_gaussian_ids", []),
+                "score": group.get("group_risk_weighted_contribution", 0.0),
+            })
+        for group in protect_groups:
+            out["good_contributors"].append({
+                "region_key": region_key,
+                "view_id": view_id,
+                "region_id": region_id,
+                "group_id": group.get("group_id"),
+                "group_label": group.get("group_label"),
+                "future_action_tag": group.get("future_action_tag"),
+                "stable_gaussian_ids": group.get("stable_gaussian_ids", []),
+                "score": group.get("group_risk_weighted_contribution", 0.0),
+            })
+        if selected.size:
+            bad_pixels = [[int(x), int(y), 3.0] for x, y in selected[:512]]
+            out["pixel_feedback_by_view"].append({
+                "view_id": view_id,
+                "region_key": region_key,
+                "bad_pixels": bad_pixels,
+                "good_pixels": [],
+            })
+    return out
+
+
+def _load_contribution_frames(path):
+    if not path or not os.path.exists(path):
+        return []
+    try:
+        payload = read_json(path)
+    except Exception:
+        return []
+    return payload.get("frames", []) if isinstance(payload, dict) else []
+
+
+def _load_frame_selected_pixels(frame, contribution_summary_path=""):
+    npz_path = ((frame or {}).get("paths") or {}).get("npz", "")
+    if npz_path and not os.path.exists(npz_path) and contribution_summary_path:
+        local_candidate = os.path.join(os.path.dirname(contribution_summary_path), os.path.basename(npz_path))
+        if os.path.exists(local_candidate):
+            npz_path = local_candidate
+    if not npz_path or not os.path.exists(npz_path):
+        return np.zeros((0, 2), dtype=np.int64)
+    try:
+        with np.load(npz_path, allow_pickle=True) as data:
+            if "selected_pixels" not in data:
+                return np.zeros((0, 2), dtype=np.int64)
+            return np.asarray(data["selected_pixels"], dtype=np.int64).reshape(-1, 2)
+    except Exception:
+        return np.zeros((0, 2), dtype=np.int64)
+
+
+def _bbox_from_pixels(pixels, pad=6):
+    if pixels.size == 0:
+        return None
+    xs = pixels[:, 0]
+    ys = pixels[:, 1]
+    return [
+        int(max(0, xs.min() - pad)),
+        int(max(0, ys.min() - pad)),
+        int(xs.max() + pad + 1),
+        int(ys.max() + pad + 1),
+    ]
 
 
 def run_group_counterfactual_dryrun_stage(dryrun_scorer_path, contribution_summary_path, signal_path, out_dir, max_regions=1, extra_args=None):
